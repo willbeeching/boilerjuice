@@ -1,5 +1,7 @@
 # Environment variables
 .env
+.env.*
+!.env.example
 
 # Python
 __pycache__/
@@ -19,6 +21,7 @@ lib64/
 parts/
 sdist/
 var/
+wheels/
 *.egg-info/
 .installed.cfg
 *.egg
@@ -32,3 +35,21 @@ ENV/
 .vscode/
 *.swp
 *.swo
+
+# Operating System
+.DS_Store
+Thumbs.db
+
+# Home Assistant
+*.db
+*.log
+*.db-shm
+*.db-wal
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+coverage.xml
+*.cover
