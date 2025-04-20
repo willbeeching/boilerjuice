@@ -27,6 +27,8 @@ The integration provides several sensors to monitor your oil tank:
 - **Total Consumption** - Total oil consumption in liters since last reset
 - **Energy Consumption** - Oil consumption converted to kWh
 
+The data is updated once per day to avoid excessive requests to the BoilerJuice website.
+
 ### Services
 
 The integration provides the following services:
@@ -49,7 +51,7 @@ The integration can be configured through the Home Assistant UI. You'll need to 
 The integration:
 
 1. Logs into your BoilerJuice account using the provided credentials
-2. Scrapes the tank data from the BoilerJuice website every 15 minutes
+2. Scrapes the tank data from the BoilerJuice website once per day
 3. Processes the data to calculate:
    - Current tank levels and volumes
    - Consumption rates
