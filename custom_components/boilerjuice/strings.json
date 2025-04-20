@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        },
+        "description": "Please enter your BoilerJuice credentials.",
+        "title": "BoilerJuice Account"
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "invalid_auth": "Invalid authentication",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "Account is already configured"
+    }
+  },
+  "services": {
+    "reset_consumption": {
+      "name": "Reset Consumption",
+      "description": "Reset the consumption counters to zero."
+    }
+  }
+}
