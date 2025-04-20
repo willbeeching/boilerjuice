@@ -82,7 +82,7 @@ Common issues:
 
 For support:
 
-1. Check the [Issues](https://github.com/yourusername/boilerjuice-scrape/issues) section for known problems
+1. Check the [Issues](https://github.com/willbeeching/boilerjuice/issues) section for known problems
 2. Open a new issue if you encounter a bug
 3. Include your Home Assistant logs when reporting issues
 
