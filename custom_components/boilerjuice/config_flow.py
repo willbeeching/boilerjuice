@@ -37,10 +37,13 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
             raise CannotConnect from err
         raise err
 
-    # Get the tank name if available
+    # Get the model name if available, fallback to tank name, then default
     title = "BoilerJuice Tank"
-    if coordinator.data and coordinator.data.get("name"):
-        title = coordinator.data["name"]
+    if coordinator.data:
+        if coordinator.data.get("model"):
+            title = coordinator.data["model"]
+        elif coordinator.data.get("name"):
+            title = coordinator.data["name"]
 
     return {"title": title}
 

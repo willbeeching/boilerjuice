@@ -5,6 +5,7 @@ import logging
 import re
 from datetime import datetime, timedelta
 from typing import Union, Dict, Any
+import json
 
 from bs4 import BeautifulSoup
 from homeassistant.core import HomeAssistant
@@ -248,16 +249,61 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                         data["current_volume_litres"] = int(volume_match.group(1))
                         _LOGGER.debug("Found current volume: %s litres", data["current_volume_litres"])
 
+                # Get tank name
+                tank_name_input = soup.find('input', {'id': 'tank_user_tanks_attributes_0_name'})
+                if tank_name_input and tank_name_input.get('value'):
+                    data["name"] = tank_name_input['value']
+                    _LOGGER.debug("Found tank name: %s", data["name"])
+
+                # Get tank manufacturer/model
+                tank_model_input = soup.find('input', {'id': 'tankModelInput'})
+                if tank_model_input and tank_model_input.get('value'):
+                    model_id = tank_model_input.get('value')
+                    data["model_id"] = model_id
+                    _LOGGER.debug("Found tank model ID: %s", model_id)
+
+                    # Try to find the manufacturer data in the JavaScript
+                    scripts = soup.find_all('script')
+                    for script in scripts:
+                        if script.string and 'var jsonData = ' in script.string:
+                            _LOGGER.debug("Found jsonData variable")
+                            script_text = script.string
+                            start_idx = script_text.find('var jsonData = ')
+                            if start_idx >= 0:
+                                # Try to find where the JSON array ends
+                                array_start = script_text.find('[', start_idx)
+                                if array_start >= 0:
+                                    bracket_count = 1
+                                    array_end = array_start + 1
+                                    while array_end < len(script_text) and bracket_count > 0:
+                                        if script_text[array_end] == '[':
+                                            bracket_count += 1
+                                        elif script_text[array_end] == ']':
+                                            bracket_count -= 1
+                                        array_end += 1
+
+                                    if bracket_count == 0:
+                                        json_str = script_text[array_start:array_end]
+                                        try:
+                                            json_data = json.loads(json_str)
+                                            # Find the manufacturer for our model ID
+                                            for item in json_data:
+                                                if str(item.get('id')) == str(model_id):
+                                                    data["model"] = item.get('tank', {}).get('Description')
+                                                    data["manufacturer"] = item.get('tank', {}).get('Brand')
+                                                    _LOGGER.debug("Found manufacturer from JSON: %s", data["model"])
+                                                    break
+                                        except json.JSONDecodeError as e:
+                                            _LOGGER.error("Failed to parse tank model JSON: %s", e)
+                            break
+                else:
+                    _LOGGER.debug("Could not find tank model ID")
+
                 # Get tank shape
-                for shape in ["cuboid", "horizontal_cylinder", "vertical_cylinder"]:
-                    shape_input = soup.find('input', {
-                        'type': 'radio',
-                        'name': 'tank-shape',
-                        'value': shape,
-                        'checked': True
-                    })
-                    if shape_input:
-                        data["shape"] = shape.replace("_", " ").title()
+                for shape in ['cuboid', 'horizontal_cylinder', 'vertical_cylinder']:
+                    shape_input = soup.find('input', {'type': 'radio', 'name': 'tank-shape', 'value': shape})
+                    if shape_input and shape_input.get('checked'):
+                        data["shape"] = shape.replace('_', ' ').title()
                         _LOGGER.debug("Found tank shape: %s", data["shape"])
                         break
 
@@ -266,20 +312,8 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                 if oil_type_select:
                     selected_option = oil_type_select.find('option', selected=True)
                     if selected_option:
-                        data["oil_type"] = selected_option.text.strip()
+                        data["oil_type"] = selected_option.text
                         _LOGGER.debug("Found oil type: %s", data["oil_type"])
-
-                # Get tank name
-                name_input = soup.find('input', {'id': 'tank_user_tanks_attributes_0_name'})
-                if name_input and name_input.get('value'):
-                    data["name"] = name_input['value']
-                    _LOGGER.debug("Found tank name: %s", data["name"])
-
-                # Get tank model
-                model_input = soup.find('input', {'id': 'tank_model'})
-                if model_input and model_input.get('value'):
-                    data["model"] = model_input['value']
-                    _LOGGER.debug("Found tank model: %s", data["model"])
 
                 # Add tank ID
                 data["id"] = tank_id

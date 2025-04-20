@@ -95,14 +95,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 raise ConfigEntryAuthFailed
             raise ConfigEntryNotReady
 
-        # Register the device
-        device_registry: DeviceRegistry = async_get_device_registry(hass)
+        # Register device
+        device_registry = async_get_device_registry(hass)
         device_registry.async_get_or_create(
             config_entry_id=entry.entry_id,
-            identifiers={(DOMAIN, entry.entry_id)},
-            name="Oil Tank",
-            manufacturer="BoilerJuice",
-            model=coordinator.data.get("model") if coordinator.data else None,
+            identifiers={(DOMAIN, coordinator.data["id"])},
+            name=coordinator.data.get("name", coordinator.data.get("model", "BoilerJuice Tank")),
+            manufacturer=coordinator.data.get("manufacturer", "BoilerJuice"),
+            model=coordinator.data.get("model"),
             entry_type=DeviceEntryType.SERVICE,
             configuration_url="https://www.boilerjuice.com/uk",
         )

@@ -16,6 +16,7 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.device_registry import DeviceEntryType
 
 from .const import (
     DOMAIN,
@@ -79,9 +80,9 @@ class BoilerJuiceSensor(SensorEntity):
         self._coordinator = coordinator
         self._attr_has_entity_name = True
         self._attr_should_poll = False
-        self._attr_unique_id = f"{entry_id}_{self.__class__.__name__}"
+        self._attr_unique_id = f"{coordinator.data['id']}_{self.__class__.__name__}"
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry_id)},
+            identifiers={(DOMAIN, coordinator.data["id"])},
         )
 
     @property
