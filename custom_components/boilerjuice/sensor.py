@@ -15,9 +15,12 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.device_registry import DeviceEntryType
 from typing import Any
+from datetime import datetime
+import datetime as dt
+from zoneinfo import ZoneInfo
 
 from .const import (
     DOMAIN,
@@ -71,6 +74,7 @@ async def async_setup_entry(
             BoilerJuiceKwhPerLitreSensor(coordinator, entry.entry_id),
             BoilerJuiceCostPerKwhSensor(coordinator, entry.entry_id),
             BoilerJuiceOilPriceSensor(coordinator, entry.entry_id),
+            BoilerJuiceLastUpdateSensor(coordinator, entry.entry_id),
         ]
     )
 
@@ -319,10 +323,10 @@ class BoilerJuiceKwhPerLitreSensor(BoilerJuiceSensor):
         return self._coordinator.data.get("kwh_per_litre", DEFAULT_KWH_PER_LITRE)
 
 class BoilerJuiceCostPerKwhSensor(BoilerJuiceSensor):
-    """Representation of the cost per kWh based on current oil price."""
+    """Representation of a BoilerJuice cost per kWh sensor."""
 
-    _attr_name = "Oil Cost per kWh"
-    _attr_native_unit_of_measurement = "GBP/kWh"
+    _attr_name = "Oil Cost Per kWh"
+    _attr_native_unit_of_measurement = "p/kWh"
     _attr_device_class = SensorDeviceClass.MONETARY
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_icon = "mdi:currency-gbp"
@@ -333,24 +337,31 @@ class BoilerJuiceCostPerKwhSensor(BoilerJuiceSensor):
         if not self._coordinator.data:
             return None
 
-        price_pence = self._coordinator.data.get("current_price_pence")
-        kwh_per_litre = self._coordinator.data.get("kwh_per_litre", DEFAULT_KWH_PER_LITRE)
+        oil_price = self._coordinator.data.get("current_price_pence")
+        kwh_per_litre = self._coordinator.data.get("kwh_per_litre")
 
-        if price_pence is None or kwh_per_litre is None:
+        if oil_price is None or kwh_per_litre is None or kwh_per_litre == 0:
             return None
 
-        # Convert pence/litre to pounds/kWh
-        # First convert pence to pounds (divide by 100)
-        # Then divide by kWh per litre to get pounds per kWh
-        return round((price_pence / 100) / kwh_per_litre, 3)
+        cost_per_kwh = oil_price / kwh_per_litre
+        return round(cost_per_kwh, 1)
+
+class BoilerJuiceLastUpdateSensor(BoilerJuiceSensor):
+    """Representation of a BoilerJuice last update time sensor."""
+
+    _attr_name = "Last Updated"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Return the state attributes."""
-        if not self._coordinator.data:
-            return {}
-        return {
-            "price_pence_per_litre": self._coordinator.data.get("current_price_pence"),
-            "kwh_per_litre": self._coordinator.data.get("kwh_per_litre", DEFAULT_KWH_PER_LITRE),
-            "last_updated": self._coordinator.data.get("last_updated")
-        }
+    def native_value(self) -> datetime | None:
+        """Return the last update timestamp."""
+        if not self._coordinator._last_update:
+            return None
+
+        # Make sure timestamp has timezone info
+        last_update = self._coordinator._last_update
+        if last_update.tzinfo is None:
+            # Use the Home Assistant timezone
+            return last_update.replace(tzinfo=ZoneInfo(self.hass.config.time_zone))
+        return last_update
