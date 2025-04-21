@@ -9,6 +9,10 @@ NAME = "BoilerJuice"
 CONF_EMAIL = "email"
 CONF_PASSWORD = "password"
 CONF_TANK_ID = "tank_id"
+CONF_KWH_PER_LITRE = "kwh_per_litre"
+
+# Default Values
+DEFAULT_KWH_PER_LITRE = 10.35  # typical value for heating oil
 
 # URLs
 BASE_URL = "https://www.boilerjuice.com/uk"

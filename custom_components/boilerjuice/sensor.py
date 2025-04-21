@@ -17,10 +17,10 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.device_registry import DeviceEntryType
+from typing import Any
 
 from .const import (
     DOMAIN,
-    SENSOR_LEVEL,
     SENSOR_VOLUME,
     SENSOR_CAPACITY,
     SENSOR_HEIGHT,
@@ -32,6 +32,7 @@ from .const import (
     ATTR_OIL_TYPE,
     ATTR_TANK_MODEL,
     ATTR_TANK_ID,
+    DEFAULT_KWH_PER_LITRE,
 )
 from .coordinator import BoilerJuiceDataUpdateCoordinator
 
@@ -57,14 +58,19 @@ async def async_setup_entry(
 
     async_add_entities(
         [
-            BoilerJuiceTankLevelSensor(coordinator, entry.entry_id),
+            BoilerJuiceTotalOilLevelSensor(coordinator, entry.entry_id),
+            BoilerJuiceUsableOilLevelSensor(coordinator, entry.entry_id),
             BoilerJuiceTankVolumeSensor(coordinator, entry.entry_id),
+            BoilerJuiceUsableVolumeSensor(coordinator, entry.entry_id),
             BoilerJuiceTankCapacitySensor(coordinator, entry.entry_id),
-            BoilerJuiceTankHeightSensor(coordinator, entry.entry_id),
             BoilerJuiceDailyConsumptionSensor(coordinator, entry.entry_id),
             BoilerJuiceTotalConsumptionSensor(coordinator, entry.entry_id),
             BoilerJuiceTotalConsumptionKwhSensor(coordinator, entry.entry_id),
+            BoilerJuiceTankHeightSensor(coordinator, entry.entry_id),
             BoilerJuiceDaysUntilEmptySensor(coordinator, entry.entry_id),
+            BoilerJuiceKwhPerLitreSensor(coordinator, entry.entry_id),
+            BoilerJuiceCostPerKwhSensor(coordinator, entry.entry_id),
+            BoilerJuiceOilPriceSensor(coordinator, entry.entry_id),
         ]
     )
 
@@ -100,34 +106,6 @@ class BoilerJuiceSensor(SensorEntity):
         """Update the entity."""
         await self._coordinator.async_request_refresh()
 
-class BoilerJuiceTankLevelSensor(BoilerJuiceSensor):
-    """Representation of a BoilerJuice tank level sensor."""
-
-    _attr_name = SENSOR_LEVEL
-    _attr_native_unit_of_measurement = PERCENTAGE
-    _attr_device_class = SensorDeviceClass.BATTERY
-    _attr_state_class = SensorStateClass.MEASUREMENT
-
-    @property
-    def native_value(self) -> int | None:
-        """Return the state of the sensor."""
-        if not self._coordinator.data:
-            return None
-        return self._coordinator.data.get("level_percentage")
-
-    @property
-    def extra_state_attributes(self) -> dict:
-        """Return the state attributes."""
-        if not self._coordinator.data:
-            return {}
-        return {
-            ATTR_TANK_NAME: self._coordinator.data.get("name"),
-            ATTR_TANK_SHAPE: self._coordinator.data.get("shape"),
-            ATTR_OIL_TYPE: self._coordinator.data.get("oil_type"),
-            ATTR_TANK_MODEL: self._coordinator.data.get("model"),
-            ATTR_TANK_ID: self._coordinator.data.get("id"),
-        }
-
 class BoilerJuiceTankVolumeSensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice tank volume sensor."""
 
@@ -142,6 +120,21 @@ class BoilerJuiceTankVolumeSensor(BoilerJuiceSensor):
         if not self._coordinator.data:
             return None
         return self._coordinator.data.get("current_volume_litres")
+
+class BoilerJuiceUsableVolumeSensor(BoilerJuiceSensor):
+    """Representation of a BoilerJuice usable oil volume sensor."""
+
+    _attr_name = "Usable Oil Volume"
+    _attr_native_unit_of_measurement = UnitOfVolume.LITERS
+    _attr_device_class = SensorDeviceClass.VOLUME
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the state of the sensor."""
+        if not self._coordinator.data:
+            return None
+        return self._coordinator.data.get("usable_volume_litres")
 
 class BoilerJuiceTankCapacitySensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice tank capacity sensor."""
@@ -186,7 +179,7 @@ class BoilerJuiceDailyConsumptionSensor(BoilerJuiceSensor):
         """Return the state of the sensor."""
         if not self._coordinator.data:
             return None
-        value = self._coordinator.data.get("daily_consumption_liters")
+        value = self._coordinator.data.get("daily_consumption_usable_liters")
         return round(value, 1) if value is not None else None
 
 class BoilerJuiceTotalConsumptionSensor(BoilerJuiceSensor):
@@ -202,7 +195,7 @@ class BoilerJuiceTotalConsumptionSensor(BoilerJuiceSensor):
         """Return the state of the sensor."""
         if not self._coordinator.data:
             return None
-        value = self._coordinator.data.get("total_consumption_liters")
+        value = self._coordinator.data.get("total_consumption_usable_liters")
         return round(value, 1) if value is not None else None
 
 class BoilerJuiceTotalConsumptionKwhSensor(BoilerJuiceSensor):
@@ -218,7 +211,7 @@ class BoilerJuiceTotalConsumptionKwhSensor(BoilerJuiceSensor):
         """Return the state of the sensor."""
         if not self._coordinator.data:
             return None
-        value = self._coordinator.data.get("total_consumption_kwh")
+        value = self._coordinator.data.get("total_consumption_usable_kwh")
         return round(value, 1) if value is not None else None
 
 class BoilerJuiceDaysUntilEmptySensor(BoilerJuiceSensor):
@@ -233,5 +226,131 @@ class BoilerJuiceDaysUntilEmptySensor(BoilerJuiceSensor):
         """Return the state of the sensor."""
         if not self._coordinator.data:
             return None
-        value = self._coordinator.data.get("days_until_empty")
-        return round(value, 1) if value is not None else None
+
+        usable_volume = self._coordinator.data.get("usable_volume_litres")
+        if usable_volume is None:
+            return None
+
+        # If we have actual consumption data, use it
+        daily_consumption = self._coordinator.data.get("daily_consumption_usable_liters")
+        if daily_consumption and daily_consumption > 0:
+            return round(usable_volume / daily_consumption, 1)
+
+        # Otherwise, estimate based on usable capacity
+        usable_capacity = self._coordinator.data.get("usable_capacity_litres", 510)  # Default to 510L if not specified
+        if usable_capacity:
+            # Assume average daily consumption of 2% of usable capacity
+            estimated_daily_consumption = usable_capacity * 0.02
+            return round(usable_volume / estimated_daily_consumption, 1)
+
+        return None
+
+class BoilerJuiceUsableOilLevelSensor(BoilerJuiceSensor):
+    """Representation of a BoilerJuice usable oil level sensor."""
+
+    _attr_name = "Usable Oil Level"
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the state of the sensor."""
+        if not self._coordinator.data:
+            return None
+        return self._coordinator.data.get("usable_level_percentage")
+
+class BoilerJuiceTotalOilLevelSensor(BoilerJuiceSensor):
+    """Representation of a BoilerJuice total oil level sensor."""
+
+    _attr_name = "Total Oil Level"
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the state of the sensor."""
+        if not self._coordinator.data:
+            return None
+        return self._coordinator.data.get("total_level_percentage")
+
+class BoilerJuiceOilPriceSensor(BoilerJuiceSensor):
+    """Representation of a BoilerJuice oil price sensor."""
+
+    _attr_name = "BoilerJuice Oil Price"
+    _attr_native_unit_of_measurement = "GBP/litre"
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:currency-gbp"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the current oil price in GBP per litre."""
+        if not self._coordinator.data:
+            return None
+        price_pence = self._coordinator.data.get("current_price_pence")
+        if price_pence is None:
+            return None
+        return round(price_pence / 100, 2)  # Convert pence to pounds
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the state attributes."""
+        if not self._coordinator.data:
+            return {}
+        return {
+            "price_pence_per_litre": self._coordinator.data.get("current_price_pence"),
+            "last_updated": self._coordinator.data.get("last_updated")
+        }
+
+class BoilerJuiceKwhPerLitreSensor(BoilerJuiceSensor):
+    """Representation of the kWh per litre conversion factor."""
+
+    _attr_name = "Oil Energy Content"
+    _attr_native_unit_of_measurement = "kWh/L"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:flash"
+
+    @property
+    def native_value(self) -> float:
+        """Return the kWh per litre conversion factor."""
+        return self._coordinator.data.get("kwh_per_litre", DEFAULT_KWH_PER_LITRE)
+
+class BoilerJuiceCostPerKwhSensor(BoilerJuiceSensor):
+    """Representation of the cost per kWh based on current oil price."""
+
+    _attr_name = "Oil Cost per kWh"
+    _attr_native_unit_of_measurement = "GBP/kWh"
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:currency-gbp"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the cost per kWh."""
+        if not self._coordinator.data:
+            return None
+
+        price_pence = self._coordinator.data.get("current_price_pence")
+        kwh_per_litre = self._coordinator.data.get("kwh_per_litre", DEFAULT_KWH_PER_LITRE)
+
+        if price_pence is None or kwh_per_litre is None:
+            return None
+
+        # Convert pence/litre to pounds/kWh
+        # First convert pence to pounds (divide by 100)
+        # Then divide by kWh per litre to get pounds per kWh
+        return round((price_pence / 100) / kwh_per_litre, 3)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the state attributes."""
+        if not self._coordinator.data:
+            return {}
+        return {
+            "price_pence_per_litre": self._coordinator.data.get("current_price_pence"),
+            "kwh_per_litre": self._coordinator.data.get("kwh_per_litre", DEFAULT_KWH_PER_LITRE),
+            "last_updated": self._coordinator.data.get("last_updated")
+        }

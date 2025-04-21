@@ -10,8 +10,9 @@ from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
+import homeassistant.helpers.config_validation as cv
 
-from .const import CONF_TANK_ID, DOMAIN
+from .const import CONF_TANK_ID, DOMAIN, CONF_KWH_PER_LITRE, DEFAULT_KWH_PER_LITRE
 from .coordinator import BoilerJuiceDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -21,6 +22,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_EMAIL): str,
         vol.Required(CONF_PASSWORD): str,
         vol.Optional(CONF_TANK_ID): str,
+        vol.Optional(CONF_KWH_PER_LITRE, default=DEFAULT_KWH_PER_LITRE): vol.Coerce(float),
     }
 )
 

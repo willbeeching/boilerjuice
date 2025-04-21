@@ -1,95 +1,160 @@
-# BoilerJuice Home Assistant Integration
+# BoilerJuice Integration for Home Assistant
 
-This integration allows you to monitor your BoilerJuice oil tank level and consumption data in Home Assistant.
-
-## Installation
-
-1. Copy the `custom_components/boilerjuice` directory to your Home Assistant's `custom_components` directory.
-2. Restart Home Assistant.
-3. Go to Settings > Devices & Services > Add Integration
-4. Search for "BoilerJuice" and click on it
-5. Enter your BoilerJuice email and password
-6. Optionally enter your tank ID if you have multiple tanks
-7. Click Submit
+This custom integration allows you to monitor your BoilerJuice oil tank details in Home Assistant.
 
 ## Features
 
-The integration provides several sensors to monitor your oil tank:
-
-### Sensors
-
-- **Tank Level** - Current oil level as a percentage
-- **Tank Volume** - Current volume of oil in liters
-- **Tank Capacity** - Total tank capacity in liters
-- **Tank Height** - Height of oil in the tank in centimeters
-- **Days Until Empty** - Estimated days until the tank will be empty (based on consumption)
-- **Daily Consumption** - Average daily consumption in liters
-- **Total Consumption** - Total oil consumption in liters since last reset
-- **Energy Consumption** - Oil consumption converted to kWh
-
-The data is updated once per day to avoid excessive requests to the BoilerJuice website.
-
-### Services
-
-The integration provides the following services:
-
-- **reset_consumption** - Resets the consumption counters to zero
-  ```yaml
-  service: boilerjuice.reset_consumption
-  ```
-
-## Configuration
-
-The integration can be configured through the Home Assistant UI. You'll need to provide:
-
-- **Email** (required): Your BoilerJuice account email
-- **Password** (required): Your BoilerJuice account password
-- **Tank ID** (optional): If you have multiple tanks, specify which one to monitor
+- Monitor your oil tank levels and volumes
+- Track oil consumption
+- View current oil prices
+- Calculate energy costs
+- Estimate days until empty
 
 ## How It Works
 
-The integration:
+The integration works by:
 
-1. Logs into your BoilerJuice account using the provided credentials
-2. Scrapes the tank data from the BoilerJuice website once per day
-3. Processes the data to calculate:
-   - Current tank levels and volumes
-   - Consumption rates
-   - Energy usage (using a conversion factor of 10.35 kWh per liter of oil)
-   - Estimated days until empty based on usage patterns
+1. **Data Collection**:
 
-The integration creates a device entry for your oil tank, grouping all sensors together for easy access in the Home Assistant UI.
+   - Logs into your BoilerJuice account securely
+   - Scrapes tank data from your account page
+   - Fetches current oil prices from the kerosene prices page
+   - Updates once per day to avoid excessive requests
+
+2. **Tank Monitoring**:
+
+   - Tracks both total and usable oil levels
+   - Monitors total volume (710L) and usable volume (510L)
+   - Records tank dimensions and capacity (1170L)
+   - Calculates percentages for both total and usable oil
+
+3. **Consumption Tracking**:
+
+   - Calculates daily consumption based on volume changes
+   - Maintains running totals of oil used
+   - Converts oil consumption to energy (kWh)
+   - Estimates days until empty based on usage patterns
+
+4. **Energy Calculations**:
+
+   - Converts oil volume to energy using configurable kWh/L value
+   - Default energy content is 10.35 kWh/L for heating oil
+   - Calculates cost per kWh based on current oil price
+   - Helps compare heating costs with other energy sources
+
+5. **Data Updates**:
+   - Automatically refreshes data daily
+   - Updates all sensors simultaneously
+   - Maintains historical consumption data
+   - Allows manual reset of consumption counters
+
+## Installation
+
+1. Copy the `custom_components/boilerjuice` folder to your Home Assistant `custom_components` directory
+2. Restart Home Assistant
+3. Go to Configuration > Integrations
+4. Click the "+ ADD INTEGRATION" button
+5. Search for "BoilerJuice" and select it
+6. Enter your BoilerJuice email and password
+7. Optionally configure the kWh per litre value (defaults to 10.35 kWh/L for heating oil)
+
+## Configuration
+
+### Required Configuration
+
+- **Email**: Your BoilerJuice account email address
+- **Password**: Your BoilerJuice account password
+
+### Optional Configuration
+
+- **Tank ID**: Your tank ID if you have multiple tanks
+- **kWh per litre**: Energy content of your oil in kWh per litre (default: 10.35)
+
+## Available Sensors
+
+### Tank Levels
+
+- **Total Oil Level** (%) - Total oil level as a percentage of tank capacity
+- **Usable Oil Level** (%) - Usable oil level as a percentage of usable capacity
+
+### Volumes
+
+- **Oil Tank Volume** (L) - Current total volume of oil in the tank
+- **Usable Oil Volume** (L) - Current usable volume of oil
+- **Oil Tank Capacity** (L) - Total tank capacity
+
+### Consumption
+
+- **Daily Oil Consumption** (L) - Average daily oil consumption
+- **Total Oil Consumption** (L) - Total oil consumed since last reset
+- **Total Oil Consumption (kWh)** - Total energy consumed
+
+### Cost and Energy
+
+- **BoilerJuice Oil Price** (GBP/litre) - Current oil price per litre
+- **Oil Energy Content** (kWh/L) - Energy content of your oil
+- **Oil Cost per kWh** (GBP/kWh) - Current cost of energy from your oil
+
+### Other
+
+- **Days Until Empty** (days) - Estimated days until tank is empty
+- **Oil Tank Height** (cm) - Physical height of your tank
+
+## Services
+
+### Reset Consumption
+
+Resets the consumption counters to zero.
+
+```yaml
+service: boilerjuice.reset_consumption
+```
+
+## Development
+
+### Setup Development Environment
+
+1. Clone this repository
+2. Create a virtual environment: `python3 -m venv venv`
+3. Activate the virtual environment: `source venv/bin/activate`
+4. Install dependencies: `pip install -r requirements.txt`
+
+### Running Tests
+
+```bash
+python3 test_boilerjuice.py
+```
+
+### Environment Variables
+
+Create a `.env` file with your BoilerJuice credentials:
+
+```bash
+BOILERJUICE_EMAIL=your_email@example.com
+BOILERJUICE_PASSWORD=your_password
+```
 
 ## Troubleshooting
 
-If you encounter any issues:
+### Common Issues
 
-1. Check your credentials are correct
-2. Verify your BoilerJuice account has access to the tank monitor feature
-3. Check the Home Assistant logs for any error messages
-4. If sensors show as "unknown":
-   - This is normal for consumption data when first installed
-   - Values will populate as the integration collects usage data
-   - The "Days Until Empty" calculation requires consumption data to provide accurate estimates
-
-Common issues:
-
-- **Unknown values after installation**: Some sensors need time to collect data before showing values
 - **Authentication errors**: Double-check your email and password
-- **Multiple tanks**: Specify the tank ID in the configuration if you have more than one tank
+- **Missing data**: Ensure your BoilerJuice account is active and has a tank configured
+- **Incorrect readings**: Verify your tank details on the BoilerJuice website
 
-## Support
+### Getting Help
 
-For support:
-
-1. Check the [Issues](https://github.com/willbeeching/boilerjuice/issues) section for known problems
-2. Open a new issue if you encounter a bug
-3. Include your Home Assistant logs when reporting issues
+1. Check the [Home Assistant Community Forums](https://community.home-assistant.io/)
+2. Open an issue in this repository
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Feel free to contribute to the development of this integration:
+
+1. Fork the repository
+2. Create a feature branch
+3. Submit a Pull Request
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This integration is licensed under MIT License.
