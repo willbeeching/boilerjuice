@@ -3,15 +3,17 @@ from __future__ import annotations
 
 import logging
 import re
+import os
+import json
 from datetime import datetime, timedelta
 from typing import Union, Dict, Any
-import json
 
 from bs4 import BeautifulSoup
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.storage import Store
 
 from .const import (
     CONF_EMAIL,
@@ -34,6 +36,10 @@ SCAN_INTERVAL = timedelta(days=1)
 # 1 liter of heating oil = 10.35 kWh (typical value for heating oil)
 LITERS_TO_KWH = 10.35
 
+# Storage constants
+STORAGE_VERSION = 1
+STORAGE_KEY = f"{DOMAIN}_consumption_data"
+
 class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching BoilerJuice data."""
 
@@ -48,11 +54,19 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         self._config = config
         self._session = None
         self._previous_usable_volume = None
+        self._previous_total_level = None
         self._total_consumption_usable_liters = 0.0
         self._total_consumption_usable_kwh = 0.0
         self._daily_consumption_usable_liters = 0.0
         self._last_update = None
         self._kwh_per_litre = self._get_config_value_optional(CONF_KWH_PER_LITRE, DEFAULT_KWH_PER_LITRE)
+
+        # Set up storage
+        self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        self._tank_id = self._get_config_value_optional(CONF_TANK_ID)
+
+        # Load consumption data from storage
+        hass.async_create_task(self._load_consumption_data())
 
     def _get_config_value(self, key: str) -> Any:
         """Get a configuration value, handling both ConfigEntry and dict inputs."""
@@ -106,13 +120,123 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
 
         return None
 
+    async def _load_consumption_data(self) -> None:
+        """Load consumption data from storage."""
+        stored_data = await self._store.async_load()
+
+        if stored_data:
+            _LOGGER.debug("Loading stored consumption data: %s", stored_data)
+
+            # If we have a tank ID, try to get data specific to this tank
+            if self._tank_id and self._tank_id in stored_data:
+                tank_data = stored_data[self._tank_id]
+
+                self._total_consumption_usable_liters = tank_data.get("total_consumption_liters", 0.0)
+                self._total_consumption_usable_kwh = tank_data.get("total_consumption_kwh", 0.0)
+                self._daily_consumption_usable_liters = tank_data.get("daily_consumption_liters", 0.0)
+
+                # Convert stored string timestamp to datetime if exists
+                last_update_str = tank_data.get("last_update")
+                if last_update_str:
+                    try:
+                        self._last_update = datetime.fromisoformat(last_update_str)
+                    except (ValueError, TypeError):
+                        self._last_update = None
+
+                # Get reference values if available
+                self._previous_usable_volume = tank_data.get("reference_volume")
+                self._previous_total_level = tank_data.get("reference_level")
+
+                _LOGGER.info(
+                    "Loaded stored consumption data for tank %s: total=%s L, daily=%s L/day",
+                    self._tank_id,
+                    self._total_consumption_usable_liters,
+                    self._daily_consumption_usable_liters
+                )
+            elif not self._tank_id and stored_data.get("default"):
+                # Fallback to default if no tank ID
+                default_data = stored_data["default"]
+
+                self._total_consumption_usable_liters = default_data.get("total_consumption_liters", 0.0)
+                self._total_consumption_usable_kwh = default_data.get("total_consumption_kwh", 0.0)
+                self._daily_consumption_usable_liters = default_data.get("daily_consumption_liters", 0.0)
+
+                # Convert stored string timestamp to datetime if exists
+                last_update_str = default_data.get("last_update")
+                if last_update_str:
+                    try:
+                        self._last_update = datetime.fromisoformat(last_update_str)
+                    except (ValueError, TypeError):
+                        self._last_update = None
+
+                # Get reference values if available
+                self._previous_usable_volume = default_data.get("reference_volume")
+                self._previous_total_level = default_data.get("reference_level")
+
+                _LOGGER.info(
+                    "Loaded default stored consumption data: total=%s L, daily=%s L/day",
+                    self._total_consumption_usable_liters,
+                    self._daily_consumption_usable_liters
+                )
+
+    async def _save_consumption_data(self) -> None:
+        """Save consumption data to storage."""
+        tank_id = self.data.get("id") if self.data else self._tank_id
+
+        if not tank_id:
+            tank_id = "default"
+
+        # Load existing data first
+        stored_data = await self._store.async_load() or {}
+
+        # Update with current values
+        tank_data = {
+            "total_consumption_liters": self._total_consumption_usable_liters,
+            "total_consumption_kwh": self._total_consumption_usable_kwh,
+            "daily_consumption_liters": self._daily_consumption_usable_liters,
+            "reference_volume": self._previous_usable_volume,
+            "reference_level": self._previous_total_level,
+        }
+
+        # Store last update time as ISO format string
+        if self._last_update:
+            tank_data["last_update"] = self._last_update.isoformat()
+
+        stored_data[tank_id] = tank_data
+
+        # Save to storage
+        await self._store.async_save(stored_data)
+        _LOGGER.debug("Saved consumption data for tank %s: %s", tank_id, tank_data)
+
     def reset_consumption(self) -> None:
         """Reset the consumption counter."""
         self._total_consumption_usable_liters = 0.0
         self._total_consumption_usable_kwh = 0.0
         self._daily_consumption_usable_liters = 0.0
         self._previous_usable_volume = None
+        self._previous_total_level = None
         self._last_update = None
+
+        # Save the reset to storage
+        self.hass.async_create_task(self._save_consumption_data())
+
+    def force_consumption_reference(self, data: dict) -> None:
+        """Set the current levels as reference points without resetting consumption stats."""
+        current_usable_volume = float(data.get("usable_volume_litres", 0))
+        current_total_level = float(data.get("total_level_percentage", 0))
+
+        self._previous_usable_volume = current_usable_volume
+        self._previous_total_level = current_total_level
+        self._last_update = datetime.now()
+
+        _LOGGER.info(
+            "Force-set reference values: usable_volume=%s L, total_level=%s%%",
+            current_usable_volume,
+            current_total_level
+        )
+
+        # Save the new reference values
+        self.hass.async_create_task(self._save_consumption_data())
 
     async def _get_tank_id(self) -> str | None:
         """Get the tank ID from the tanks page."""
@@ -365,21 +489,102 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
 
                 # Calculate consumption based on usable oil
                 current_usable_volume = float(data.get("usable_volume_litres", 0))
+                current_total_level = float(data.get("total_level_percentage", 0))
                 now = datetime.now()
 
-                if self._previous_usable_volume is not None and current_usable_volume < self._previous_usable_volume:
-                    liters_used = self._previous_usable_volume - current_usable_volume
-                    self._total_consumption_usable_liters += liters_used
-                    self._total_consumption_usable_kwh += liters_used * LITERS_TO_KWH
+                # Log current state
+                _LOGGER.debug(
+                    "Current state: usable_volume=%s L, total_level=%s%%, previous_volume=%s L, previous_level=%s%%",
+                    current_usable_volume,
+                    current_total_level,
+                    self._previous_usable_volume,
+                    self._previous_total_level
+                )
 
-                    # Calculate daily consumption if we have a previous update
-                    if self._last_update:
-                        days_since_last_update = (now - self._last_update).total_seconds() / 86400
-                        if days_since_last_update > 0:
-                            self._daily_consumption_usable_liters = liters_used / days_since_last_update
+                # If we don't have previous values, set them without calculating consumption
+                if self._previous_usable_volume is None or self._previous_total_level is None:
+                    _LOGGER.info("First update or reference values missing - setting initial values without calculating consumption")
+                    self.force_consumption_reference(data)
 
-                self._previous_usable_volume = current_usable_volume
-                self._last_update = now
+                    # For manual consumption based on current value
+                    # If both usable oil volumes and percentages are valid and seem to indicate consumption, calculate it
+                    if data.get("capacity_litres") and current_total_level < 100:
+                        capacity = data.get("capacity_litres")
+                        # Calculate how much oil has been used (100% - current_level)%
+                        estimated_used = ((100 - current_total_level) / 100) * capacity
+                        _LOGGER.info(
+                            "Estimated consumption based on current level (%s%%): %s L out of %s L capacity",
+                            current_total_level,
+                            round(estimated_used, 1),
+                            capacity
+                        )
+                else:
+                    # Track consumption based on direct volume change if available
+                    consumption_detected = False
+                    if self._previous_usable_volume is not None and current_usable_volume < self._previous_usable_volume:
+                        liters_used = self._previous_usable_volume - current_usable_volume
+                        _LOGGER.info(
+                            "Detected consumption from volume change: %s L (from %s L to %s L)",
+                            liters_used,
+                            self._previous_usable_volume,
+                            current_usable_volume
+                        )
+
+                        self._total_consumption_usable_liters += liters_used
+                        self._total_consumption_usable_kwh += liters_used * LITERS_TO_KWH
+                        consumption_detected = True
+
+                        # Calculate daily consumption if we have a previous update
+                        if self._last_update:
+                            days_since_last_update = (now - self._last_update).total_seconds() / 86400
+                            if days_since_last_update > 0:
+                                self._daily_consumption_usable_liters = liters_used / days_since_last_update
+                                _LOGGER.info(
+                                    "Updated daily consumption to %s L/day (over %s days)",
+                                    self._daily_consumption_usable_liters,
+                                    days_since_last_update
+                                )
+
+                    # If no consumption detected from volume, check percentage change
+                    if not consumption_detected and self._previous_total_level is not None:
+                        _LOGGER.debug(
+                            "Checking level change: current=%s%%, previous=%s%%",
+                            current_total_level,
+                            self._previous_total_level
+                        )
+
+                        if current_total_level < self._previous_total_level:
+                            # Calculate liters based on percentage change
+                            capacity = data.get("capacity_litres")
+                            if capacity:
+                                percent_change = self._previous_total_level - current_total_level
+                                liters_used = (percent_change / 100) * capacity
+                                _LOGGER.info(
+                                    "Detected consumption from level change: %s%% (%s L) - tank capacity: %s L",
+                                    percent_change,
+                                    liters_used,
+                                    capacity
+                                )
+
+                                self._total_consumption_usable_liters += liters_used
+                                self._total_consumption_usable_kwh += liters_used * LITERS_TO_KWH
+                                consumption_detected = True
+
+                                # Calculate daily consumption if we have a previous update
+                                if self._last_update:
+                                    days_since_last_update = (now - self._last_update).total_seconds() / 86400
+                                    if days_since_last_update > 0:
+                                        self._daily_consumption_usable_liters = liters_used / days_since_last_update
+                                        _LOGGER.info(
+                                            "Updated daily consumption to %s L/day (over %s days)",
+                                            self._daily_consumption_usable_liters,
+                                            days_since_last_update
+                                        )
+
+                    # Update previous values regardless of consumption
+                    self._previous_usable_volume = current_usable_volume
+                    self._previous_total_level = current_total_level
+                    self._last_update = now
 
                 # Add consumption data to tank data
                 data["total_consumption_usable_liters"] = self._total_consumption_usable_liters
@@ -387,12 +592,22 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                 data["daily_consumption_usable_liters"] = self._daily_consumption_usable_liters
                 data["days_until_empty"] = self._calculate_days_until_empty(data)
 
-                _LOGGER.debug(
-                    "Tank data: usable_volume=%s L, daily_consumption=%s L/day, days_until_empty=%s",
-                    data.get("usable_volume_litres"),
-                    data.get("daily_consumption_usable_liters"),
-                    data.get("days_until_empty")
+                _LOGGER.info(
+                    "Consumption data: total=%s L, daily=%s L/day, total_kwh=%s",
+                    round(self._total_consumption_usable_liters, 1),
+                    round(self._daily_consumption_usable_liters, 1),
+                    round(self._total_consumption_usable_kwh, 1)
                 )
+
+                # Ensure correct kWh calculation (sometimes this might be out of sync)
+                if abs(self._total_consumption_usable_kwh - (self._total_consumption_usable_liters * LITERS_TO_KWH)) > 0.1:
+                    _LOGGER.info(
+                        "Correcting kWh value from %s to %s",
+                        self._total_consumption_usable_kwh,
+                        self._total_consumption_usable_liters * LITERS_TO_KWH
+                    )
+                    self._total_consumption_usable_kwh = self._total_consumption_usable_liters * LITERS_TO_KWH
+                    data["total_consumption_usable_kwh"] = self._total_consumption_usable_kwh
 
                 # Get current oil price from kerosene prices page
                 try:
@@ -408,6 +623,9 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
 
                 # Add kWh per litre to the data
                 data["kwh_per_litre"] = self._kwh_per_litre
+
+                # Save consumption data to storage
+                self.hass.async_create_task(self._save_consumption_data())
 
                 return data
 

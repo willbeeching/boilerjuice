@@ -15,7 +15,7 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceRegistr
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.typing import ConfigType
 
-from .const import CONF_TANK_ID, DOMAIN
+from .const import CONF_TANK_ID, DOMAIN, CONF_KWH_PER_LITRE, DEFAULT_KWH_PER_LITRE
 from .coordinator import BoilerJuiceDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -37,7 +37,13 @@ CONFIG_SCHEMA = vol.Schema(
 
 # Service schemas
 SERVICE_RESET_CONSUMPTION = "reset_consumption"
-SCHEMA_RESET_CONSUMPTION = vol.Schema({})
+SERVICE_SET_CONSUMPTION = "set_consumption"
+RESET_CONSUMPTION_SCHEMA = vol.Schema({})
+
+SET_CONSUMPTION_SCHEMA = vol.Schema({
+    vol.Required("liters"): cv.positive_float,
+    vol.Optional("daily"): cv.positive_float,
+})
 
 @callback
 def async_setup_services(hass: HomeAssistant) -> None:
@@ -55,7 +61,49 @@ def async_setup_services(hass: HomeAssistant) -> None:
         DOMAIN,
         SERVICE_RESET_CONSUMPTION,
         async_handle_reset_consumption,
-        schema=SCHEMA_RESET_CONSUMPTION
+        schema=RESET_CONSUMPTION_SCHEMA
+    )
+
+    async def async_handle_set_consumption(call: ServiceCall) -> None:
+        """Handle the service call to set consumption values."""
+        data = dict(call.data)
+        total_consumption = data["liters"]
+        daily_consumption = data.get("daily")
+
+        for entry_id, coordinator in hass.data[DOMAIN].items():
+            if coordinator.data:
+                # Set the consumption values
+                coordinator._total_consumption_usable_liters = total_consumption
+                coordinator._total_consumption_usable_kwh = total_consumption * 10.35  # Use standard conversion
+
+                if daily_consumption:
+                    coordinator._daily_consumption_usable_liters = daily_consumption
+
+                # Force using current values as reference
+                coordinator.force_consumption_reference(coordinator.data)
+
+                # Update the consumption data in the current data
+                coordinator.data["total_consumption_usable_liters"] = total_consumption
+                coordinator.data["total_consumption_usable_kwh"] = total_consumption * 10.35
+
+                if daily_consumption:
+                    coordinator.data["daily_consumption_usable_liters"] = daily_consumption
+
+                # Force a refresh to update the UI
+                coordinator.async_set_updated_data(coordinator.data)
+
+                _LOGGER.info(
+                    "Manually set consumption values: total=%s L (%s kWh), daily=%s L/day",
+                    total_consumption,
+                    round(total_consumption * 10.35, 1),
+                    daily_consumption or "unchanged"
+                )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_CONSUMPTION,
+        async_handle_set_consumption,
+        schema=SET_CONSUMPTION_SCHEMA,
     )
 
 @callback
@@ -107,6 +155,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             configuration_url="https://www.boilerjuice.com/uk",
         )
 
+        # Ensure services are set up
+        async_setup_services(hass)
+
         hass.data[DOMAIN][entry.entry_id] = coordinator
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         return True
@@ -117,9 +168,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id)
         if not hass.data[DOMAIN]:
             async_unload_services(hass)
-
+            hass.data.pop(DOMAIN)
     return unload_ok
