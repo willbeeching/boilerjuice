@@ -231,45 +231,47 @@ class BoilerJuiceIncrementalConsumptionKwhSensor(BoilerJuiceSensor):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
+    def __init__(
+        self,
+        coordinator: BoilerJuiceDataUpdateCoordinator,
+        entry_id: str,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, entry_id)
+        self._last_consumption = 0.0
+        self._last_check_time = None
+        self._daily_consumption = 0.0
+        self._last_reset = None
+
     @property
     def native_value(self) -> float | None:
         """Return the incremental energy consumption in kWh."""
         if not self._coordinator.data:
             return None
 
+        now = datetime.now(ZoneInfo(self.hass.config.time_zone))
+
+        # Reset at midnight
+        if self._last_reset is None or now.date() != self._last_reset.date():
+            self._daily_consumption = 0.0
+            self._last_reset = now
+            self._last_check_time = now
+            return self._daily_consumption
+
         # Get the daily consumption in liters
         daily_consumption_liters = self._coordinator.data.get("daily_consumption_usable_liters")
         if daily_consumption_liters is None:
-            return None
+            return self._daily_consumption
 
-        # Get the last update time
-        last_update = self._coordinator._last_update
-        if last_update is None:
-            return None
+        if self._last_check_time:
+            # Calculate consumption since last check based on time
+            time_diff = (now - self._last_check_time).total_seconds() / (24 * 3600)  # Fraction of day
+            kwh_per_litre = self._coordinator.data.get("kwh_per_litre", 10.35)
+            incremental_consumption = (daily_consumption_liters * kwh_per_litre) * time_diff
+            self._daily_consumption += incremental_consumption
 
-        # Get Tado heating state
-        try:
-            tado_state = self.hass.states.get("climate.heating")  # Adjust this entity ID to match your Tado zone
-            if tado_state and tado_state.state == "heat":
-                # If heating is on, report the full daily consumption
-                daily_consumption_kwh = daily_consumption_liters * 10.35
-                return round(daily_consumption_kwh, 1)
-            else:
-                # If heating is off, report no consumption
-                return 0.0
-        except Exception as e:
-            _LOGGER.warning("Failed to get Tado state, falling back to time-based distribution: %s", e)
-
-            # Fallback to time-based distribution if Tado data is unavailable
-            now = datetime.now(last_update.tzinfo)
-            seconds_since_update = (now - last_update).total_seconds()
-            day_progress = min(1.0, max(0.0, seconds_since_update / (24 * 3600)))
-
-            # Convert liters to kWh using the standard conversion factor
-            daily_consumption_kwh = daily_consumption_liters * 10.35
-            current_consumption = daily_consumption_kwh * day_progress
-
-            return round(current_consumption, 1)
+        self._last_check_time = now
+        return round(self._daily_consumption, 1)
 
 class BoilerJuiceDaysUntilEmptySensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice days until empty sensor."""
@@ -379,7 +381,7 @@ class BoilerJuiceCostPerKwhSensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice cost per kWh sensor."""
 
     _attr_name = "Oil Cost Per kWh"
-    _attr_native_unit_of_measurement = "p/kWh"
+    _attr_native_unit_of_measurement = "GBP/kWh"
     _attr_device_class = SensorDeviceClass.MONETARY
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_icon = "mdi:currency-gbp"
@@ -396,8 +398,8 @@ class BoilerJuiceCostPerKwhSensor(BoilerJuiceSensor):
         if oil_price is None or kwh_per_litre is None or kwh_per_litre == 0:
             return None
 
-        cost_per_kwh = oil_price / kwh_per_litre
-        return round(cost_per_kwh, 1)
+        cost_per_kwh = (oil_price / kwh_per_litre) / 100  # Convert pence to GBP
+        return round(cost_per_kwh, 4)
 
 class BoilerJuiceLastUpdateSensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice last update time sensor."""
