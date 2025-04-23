@@ -17,10 +17,11 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.device_registry import DeviceEntryType
-from typing import Any
+from typing import Any, Dict
 from datetime import datetime
 import datetime as dt
 from zoneinfo import ZoneInfo
+import logging
 
 from .const import (
     DOMAIN,
@@ -38,6 +39,8 @@ from .const import (
     DEFAULT_KWH_PER_LITRE,
 )
 from .coordinator import BoilerJuiceDataUpdateCoordinator
+
+_LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -69,12 +72,14 @@ async def async_setup_entry(
             BoilerJuiceDailyConsumptionSensor(coordinator, entry.entry_id),
             BoilerJuiceTotalConsumptionSensor(coordinator, entry.entry_id),
             BoilerJuiceTotalConsumptionKwhSensor(coordinator, entry.entry_id),
+            BoilerJuiceIncrementalConsumptionKwhSensor(coordinator, entry.entry_id),
             BoilerJuiceTankHeightSensor(coordinator, entry.entry_id),
             BoilerJuiceDaysUntilEmptySensor(coordinator, entry.entry_id),
             BoilerJuiceKwhPerLitreSensor(coordinator, entry.entry_id),
             BoilerJuiceCostPerKwhSensor(coordinator, entry.entry_id),
             BoilerJuiceOilPriceSensor(coordinator, entry.entry_id),
             BoilerJuiceLastUpdateSensor(coordinator, entry.entry_id),
+            BoilerJuiceSeasonalConsumptionSensor(coordinator, entry.entry_id),
         ]
     )
 
@@ -217,6 +222,54 @@ class BoilerJuiceTotalConsumptionKwhSensor(BoilerJuiceSensor):
             return None
         value = self._coordinator.data.get("total_consumption_usable_kwh")
         return round(value, 1) if value is not None else None
+
+class BoilerJuiceIncrementalConsumptionKwhSensor(BoilerJuiceSensor):
+    """Representation of a BoilerJuice incremental consumption in kWh sensor."""
+
+    _attr_name = "Oil Consumption (kWh)"
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the incremental energy consumption in kWh."""
+        if not self._coordinator.data:
+            return None
+
+        # Get the daily consumption in liters
+        daily_consumption_liters = self._coordinator.data.get("daily_consumption_usable_liters")
+        if daily_consumption_liters is None:
+            return None
+
+        # Get the last update time
+        last_update = self._coordinator._last_update
+        if last_update is None:
+            return None
+
+        # Get Tado heating state
+        try:
+            tado_state = self.hass.states.get("climate.heating")  # Adjust this entity ID to match your Tado zone
+            if tado_state and tado_state.state == "heat":
+                # If heating is on, report the full daily consumption
+                daily_consumption_kwh = daily_consumption_liters * 10.35
+                return round(daily_consumption_kwh, 1)
+            else:
+                # If heating is off, report no consumption
+                return 0.0
+        except Exception as e:
+            _LOGGER.warning("Failed to get Tado state, falling back to time-based distribution: %s", e)
+
+            # Fallback to time-based distribution if Tado data is unavailable
+            now = datetime.now(last_update.tzinfo)
+            seconds_since_update = (now - last_update).total_seconds()
+            day_progress = min(1.0, max(0.0, seconds_since_update / (24 * 3600)))
+
+            # Convert liters to kWh using the standard conversion factor
+            daily_consumption_kwh = daily_consumption_liters * 10.35
+            current_consumption = daily_consumption_kwh * day_progress
+
+            return round(current_consumption, 1)
 
 class BoilerJuiceDaysUntilEmptySensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice days until empty sensor."""
@@ -365,3 +418,47 @@ class BoilerJuiceLastUpdateSensor(BoilerJuiceSensor):
             # Use the Home Assistant timezone
             return last_update.replace(tzinfo=ZoneInfo(self.hass.config.time_zone))
         return last_update
+
+class BoilerJuiceSeasonalConsumptionSensor(BoilerJuiceSensor):
+    """Representation of a BoilerJuice seasonal consumption sensor."""
+
+    _attr_name = "Seasonal Oil Consumption"
+    _attr_native_unit_of_measurement = UnitOfVolume.LITERS
+    _attr_device_class = SensorDeviceClass.VOLUME
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the current season's average daily consumption."""
+        if not self._coordinator.data:
+            return None
+        seasonal_stats = self._coordinator.data.get("seasonal_stats", {})
+        current_season = seasonal_stats.get("current_season", {})
+        return current_season.get("avg")
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return seasonal consumption statistics."""
+        if not self._coordinator.data:
+            return {}
+
+        seasonal_stats = self._coordinator.data.get("seasonal_stats", {})
+        if not seasonal_stats:
+            return {}
+
+        attributes = {
+            "current_season": seasonal_stats.get("current_season", {}).get("name", "unknown"),
+            "current_season_min": seasonal_stats.get("current_season", {}).get("min", 0),
+            "current_season_max": seasonal_stats.get("current_season", {}).get("max", 0),
+            "winter_average": seasonal_stats.get("winter_avg", 0),
+            "spring_average": seasonal_stats.get("spring_avg", 0),
+            "summer_average": seasonal_stats.get("summer_avg", 0),
+            "autumn_average": seasonal_stats.get("autumn_avg", 0),
+        }
+
+        # Add monthly averages if available
+        monthly = seasonal_stats.get("monthly", {})
+        if monthly:
+            attributes["monthly_averages"] = monthly
+
+        return attributes

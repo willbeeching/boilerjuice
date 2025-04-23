@@ -6,7 +6,9 @@ import re
 import os
 import json
 from datetime import datetime, timedelta
-from typing import Union, Dict, Any
+from typing import Union, Dict, Any, List, Tuple
+import statistics
+from calendar import month_name
 
 from bs4 import BeautifulSoup
 from homeassistant.core import HomeAssistant
@@ -36,6 +38,15 @@ SCAN_INTERVAL = timedelta(days=1)
 # 1 liter of heating oil = 10.35 kWh (typical value for heating oil)
 LITERS_TO_KWH = 10.35
 
+# Number of days to keep in rolling average
+CONSUMPTION_ROLLING_DAYS = 7
+
+# Seasonal tracking constants
+WINTER_MONTHS = [12, 1, 2]
+SPRING_MONTHS = [3, 4, 5]
+SUMMER_MONTHS = [6, 7, 8]
+AUTUMN_MONTHS = [9, 10, 11]
+
 # Storage constants
 STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}_consumption_data"
@@ -60,6 +71,10 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         self._daily_consumption_usable_liters = 0.0
         self._last_update = None
         self._kwh_per_litre = self._get_config_value_optional(CONF_KWH_PER_LITRE, DEFAULT_KWH_PER_LITRE)
+        # Add list to store daily consumption history
+        self._daily_consumption_history = []
+        # Add seasonal tracking
+        self._consumption_history_with_dates: List[Tuple[datetime, float]] = []
 
         # Set up storage
         self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
@@ -134,6 +149,13 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                 self._total_consumption_usable_liters = tank_data.get("total_consumption_liters", 0.0)
                 self._total_consumption_usable_kwh = tank_data.get("total_consumption_kwh", 0.0)
                 self._daily_consumption_usable_liters = tank_data.get("daily_consumption_liters", 0.0)
+                self._daily_consumption_history = tank_data.get("consumption_history", [])
+
+                # Load consumption history with dates
+                history_with_dates = tank_data.get("consumption_history_with_dates", [])
+                self._consumption_history_with_dates = [
+                    (datetime.fromisoformat(dt), cons) for dt, cons in history_with_dates
+                ]
 
                 # Convert stored string timestamp to datetime if exists
                 last_update_str = tank_data.get("last_update")
@@ -160,6 +182,13 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                 self._total_consumption_usable_liters = default_data.get("total_consumption_liters", 0.0)
                 self._total_consumption_usable_kwh = default_data.get("total_consumption_kwh", 0.0)
                 self._daily_consumption_usable_liters = default_data.get("daily_consumption_liters", 0.0)
+                self._daily_consumption_history = default_data.get("consumption_history", [])
+
+                # Load consumption history with dates
+                history_with_dates = default_data.get("consumption_history_with_dates", [])
+                self._consumption_history_with_dates = [
+                    (datetime.fromisoformat(dt), cons) for dt, cons in history_with_dates
+                ]
 
                 # Convert stored string timestamp to datetime if exists
                 last_update_str = default_data.get("last_update")
@@ -179,6 +208,78 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                     self._daily_consumption_usable_liters
                 )
 
+    def _get_season(self, date: datetime) -> str:
+        """Get the season for a given date."""
+        month = date.month
+        if month in WINTER_MONTHS:
+            return "winter"
+        elif month in SPRING_MONTHS:
+            return "spring"
+        elif month in SUMMER_MONTHS:
+            return "summer"
+        else:
+            return "autumn"
+
+    def _calculate_seasonal_stats(self) -> Dict[str, Any]:
+        """Calculate seasonal consumption statistics."""
+        if not self._consumption_history_with_dates:
+            return {}
+
+        # Initialize seasonal data
+        seasonal_data = {
+            "winter": [],
+            "spring": [],
+            "summer": [],
+            "autumn": [],
+            "monthly": {},
+            "current_season": {
+                "name": "",
+                "avg": 0.0,
+                "min": 0.0,
+                "max": 0.0
+            }
+        }
+
+        # Group consumption by season and month
+        for date, consumption in self._consumption_history_with_dates:
+            season = self._get_season(date)
+            seasonal_data[season].append(consumption)
+
+            # Track monthly averages
+            month_name = date.strftime("%B")  # Full month name
+            if month_name not in seasonal_data["monthly"]:
+                seasonal_data["monthly"][month_name] = []
+            seasonal_data["monthly"][month_name].append(consumption)
+
+        # Calculate seasonal averages
+        for season in ["winter", "spring", "summer", "autumn"]:
+            if seasonal_data[season]:
+                avg = statistics.mean(seasonal_data[season])
+                min_val = min(seasonal_data[season])
+                max_val = max(seasonal_data[season])
+                seasonal_data[f"{season}_avg"] = round(avg, 1)
+                seasonal_data[f"{season}_min"] = round(min_val, 1)
+                seasonal_data[f"{season}_max"] = round(max_val, 1)
+
+        # Calculate monthly averages
+        for month in seasonal_data["monthly"]:
+            if seasonal_data["monthly"][month]:
+                seasonal_data["monthly"][month] = round(
+                    statistics.mean(seasonal_data["monthly"][month]), 1
+                )
+
+        # Get current season stats
+        current_season = self._get_season(datetime.now())
+        if seasonal_data[current_season]:
+            seasonal_data["current_season"] = {
+                "name": current_season,
+                "avg": round(statistics.mean(seasonal_data[current_season]), 1),
+                "min": round(min(seasonal_data[current_season]), 1),
+                "max": round(max(seasonal_data[current_season]), 1)
+            }
+
+        return seasonal_data
+
     async def _save_consumption_data(self) -> None:
         """Save consumption data to storage."""
         tank_id = self.data.get("id") if self.data else self._tank_id
@@ -196,6 +297,11 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             "daily_consumption_liters": self._daily_consumption_usable_liters,
             "reference_volume": self._previous_usable_volume,
             "reference_level": self._previous_total_level,
+            "consumption_history": self._daily_consumption_history,
+            # Store consumption history with dates as list of [timestamp, consumption] pairs
+            "consumption_history_with_dates": [
+                [dt.isoformat(), cons] for dt, cons in self._consumption_history_with_dates
+            ],
         }
 
         # Store last update time as ISO format string
@@ -213,9 +319,11 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         self._total_consumption_usable_liters = 0.0
         self._total_consumption_usable_kwh = 0.0
         self._daily_consumption_usable_liters = 0.0
+        self._daily_consumption_history = []  # Clear history
         self._previous_usable_volume = None
         self._previous_total_level = None
         self._last_update = None
+        self._consumption_history_with_dates = []  # Clear seasonal history
 
         # Save the reset to storage
         self.hass.async_create_task(self._save_consumption_data())
@@ -534,16 +642,36 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                         self._total_consumption_usable_kwh += liters_used * LITERS_TO_KWH
                         consumption_detected = True
 
-                        # Calculate daily consumption if we have a previous update
-                        if self._last_update:
-                            days_since_last_update = (now - self._last_update).total_seconds() / 86400
-                            if days_since_last_update > 0:
-                                self._daily_consumption_usable_liters = liters_used / days_since_last_update
-                                _LOGGER.info(
-                                    "Updated daily consumption to %s L/day (over %s days)",
-                                    self._daily_consumption_usable_liters,
-                                    days_since_last_update
-                                )
+                        # Update consumption histories
+                        self._daily_consumption_history.append(liters_used)
+                        self._consumption_history_with_dates.append((now, liters_used))
+
+                        # Keep only recent history
+                        if len(self._daily_consumption_history) > CONSUMPTION_ROLLING_DAYS:
+                            self._daily_consumption_history.pop(0)
+
+                        # Calculate average daily consumption
+                        self._daily_consumption_usable_liters = sum(self._daily_consumption_history) / len(self._daily_consumption_history)
+
+                        # Calculate seasonal statistics
+                        seasonal_stats = self._calculate_seasonal_stats()
+                        current_season = seasonal_stats.get("current_season", {})
+
+                        _LOGGER.info(
+                            "Updated daily consumption to %s L/day (rolling %d-day average). "
+                            "Current %s average: %s L/day (min: %s, max: %s)",
+                            round(self._daily_consumption_usable_liters, 1),
+                            len(self._daily_consumption_history),
+                            current_season.get("name", "season"),
+                            current_season.get("avg", 0),
+                            current_season.get("min", 0),
+                            current_season.get("max", 0)
+                        )
+
+                        # Add seasonal stats to data
+                        data.update({
+                            "seasonal_stats": seasonal_stats
+                        })
 
                     # If no consumption detected from volume, check percentage change
                     if not consumption_detected and self._previous_total_level is not None:
@@ -570,16 +698,36 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                                 self._total_consumption_usable_kwh += liters_used * LITERS_TO_KWH
                                 consumption_detected = True
 
-                                # Calculate daily consumption if we have a previous update
-                                if self._last_update:
-                                    days_since_last_update = (now - self._last_update).total_seconds() / 86400
-                                    if days_since_last_update > 0:
-                                        self._daily_consumption_usable_liters = liters_used / days_since_last_update
-                                        _LOGGER.info(
-                                            "Updated daily consumption to %s L/day (over %s days)",
-                                            self._daily_consumption_usable_liters,
-                                            days_since_last_update
-                                        )
+                                # Update consumption histories
+                                self._daily_consumption_history.append(liters_used)
+                                self._consumption_history_with_dates.append((now, liters_used))
+
+                                # Keep only recent history
+                                if len(self._daily_consumption_history) > CONSUMPTION_ROLLING_DAYS:
+                                    self._daily_consumption_history.pop(0)
+
+                                # Calculate average daily consumption
+                                self._daily_consumption_usable_liters = sum(self._daily_consumption_history) / len(self._daily_consumption_history)
+
+                                # Calculate seasonal statistics
+                                seasonal_stats = self._calculate_seasonal_stats()
+                                current_season = seasonal_stats.get("current_season", {})
+
+                                _LOGGER.info(
+                                    "Updated daily consumption to %s L/day (rolling %d-day average). "
+                                    "Current %s average: %s L/day (min: %s, max: %s)",
+                                    round(self._daily_consumption_usable_liters, 1),
+                                    len(self._daily_consumption_history),
+                                    current_season.get("name", "season"),
+                                    current_season.get("avg", 0),
+                                    current_season.get("min", 0),
+                                    current_season.get("max", 0)
+                                )
+
+                                # Add seasonal stats to data
+                                data.update({
+                                    "seasonal_stats": seasonal_stats
+                                })
 
                     # Update previous values regardless of consumption
                     self._previous_usable_volume = current_usable_volume

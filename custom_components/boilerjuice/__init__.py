@@ -133,43 +133,43 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up BoilerJuice from a config entry."""
-    try:
-        coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
-        await coordinator.async_config_entry_first_refresh()
+    # Initialize the domain data if it doesn't exist
+    if DOMAIN not in hass.data:
+        hass.data[DOMAIN] = {}
 
-        if not coordinator.last_update_success:
-            _LOGGER.error("Failed to setup BoilerJuice: %s", coordinator.last_exception)
-            if isinstance(coordinator.last_exception, ConfigEntryAuthFailed):
-                raise ConfigEntryAuthFailed
-            raise ConfigEntryNotReady
+    coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
 
-        # Register device
-        device_registry = async_get_device_registry(hass)
-        device_registry.async_get_or_create(
-            config_entry_id=entry.entry_id,
-            identifiers={(DOMAIN, coordinator.data["id"])},
-            name=coordinator.data.get("name", coordinator.data.get("model", "BoilerJuice Tank")),
-            manufacturer=coordinator.data.get("manufacturer", "BoilerJuice"),
-            model=coordinator.data.get("model"),
-            entry_type=DeviceEntryType.SERVICE,
-            configuration_url="https://www.boilerjuice.com/uk",
-        )
+    # Fetch initial data
+    await coordinator.async_config_entry_first_refresh()
 
-        # Ensure services are set up
-        async_setup_services(hass)
+    if not coordinator.last_update_success:
+        _LOGGER.error("Failed to setup BoilerJuice: %s", coordinator.last_exception)
+        if isinstance(coordinator.last_exception, ConfigEntryAuthFailed):
+            raise ConfigEntryAuthFailed
+        raise ConfigEntryNotReady
 
-        hass.data[DOMAIN][entry.entry_id] = coordinator
-        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-        return True
+    # Register device
+    device_registry = async_get_device_registry(hass)
+    device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, coordinator.data["id"])},
+        name=coordinator.data.get("name", coordinator.data.get("model", "BoilerJuice Tank")),
+        manufacturer=coordinator.data.get("manufacturer", "BoilerJuice"),
+        model=coordinator.data.get("model"),
+        entry_type=DeviceEntryType.SERVICE,
+        configuration_url="https://www.boilerjuice.com/uk",
+    )
 
-    except Exception as err:
-        _LOGGER.exception("Error setting up BoilerJuice: %s", str(err))
-        raise ConfigEntryNotReady from err
+    # Ensure services are set up
+    async_setup_services(hass)
+
+    hass.data[DOMAIN][entry.entry_id] = coordinator
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    return True
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unload_ok:
+    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         hass.data[DOMAIN].pop(entry.entry_id)
         if not hass.data[DOMAIN]:
             async_unload_services(hass)
