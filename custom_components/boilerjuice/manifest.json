@@ -8,7 +8,7 @@
   "homekit": {},
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/willbeeching/boilerjuice/issues",
-  "requirements": ["aiohttp>=3.8.0", "beautifulsoup4>=4.9.3"],
+  "requirements": ["aiohttp>=3.8.0", "beautifulsoup4>=4.12.0"],
   "ssdp": [],
   "version": "1.0.0",
   "zeroconf": [],
