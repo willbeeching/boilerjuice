@@ -673,6 +673,9 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                             "seasonal_stats": seasonal_stats
                         })
 
+                        # Update the last update timestamp since consumption was detected
+                        self._last_update = now
+
                     # If no consumption detected from volume, check percentage change
                     if not consumption_detected and self._previous_total_level is not None:
                         _LOGGER.debug(
@@ -729,10 +732,13 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                                     "seasonal_stats": seasonal_stats
                                 })
 
+                                # Update the last update timestamp since consumption was detected
+                                self._last_update = now
+
                     # Update previous values regardless of consumption
                     self._previous_usable_volume = current_usable_volume
                     self._previous_total_level = current_total_level
-                    self._last_update = now
+                    # Only update _last_update if consumption was detected (moved above)
 
                 # Add consumption data to tank data
                 data["total_consumption_usable_liters"] = self._total_consumption_usable_liters
