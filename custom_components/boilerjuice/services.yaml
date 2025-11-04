@@ -1,0 +1,31 @@
+reset_consumption:
+  name: Reset Consumption
+  description: Reset the consumption counters to zero.
+
+set_consumption:
+  name: Set Consumption
+  description: Manually set the consumption values for the oil tank.
+  fields:
+    liters:
+      name: Total Consumption
+      description: The total consumption in liters.
+      required: true
+      example: 100.5
+      selector:
+        number:
+          min: 0
+          step: 0.1
+          unit_of_measurement: "L"
+          mode: box
+    daily:
+      name: Daily Consumption
+      description: The daily consumption in liters.
+      required: false
+      example: 5.2
+      selector:
+        number:
+          min: 0
+          step: 0.1
+          unit_of_measurement: "L/day"
+          mode: box
+

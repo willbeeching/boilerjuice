@@ -179,9 +179,8 @@ class BoilerJuiceDailyConsumptionSensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice daily consumption sensor."""
 
     _attr_name = "Daily Oil Consumption"
-    _attr_native_unit_of_measurement = UnitOfVolume.LITERS
-    _attr_device_class = SensorDeviceClass.VOLUME
-    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "L/day"
+    _attr_icon = "mdi:gauge"
 
     @property
     def native_value(self) -> float | None:
@@ -339,8 +338,6 @@ class BoilerJuiceOilPriceSensor(BoilerJuiceSensor):
 
     _attr_name = "BoilerJuice Oil Price"
     _attr_native_unit_of_measurement = "GBP/litre"
-    _attr_device_class = SensorDeviceClass.MONETARY
-    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_icon = "mdi:currency-gbp"
 
     @property
@@ -368,9 +365,8 @@ class BoilerJuiceKwhPerLitreSensor(BoilerJuiceSensor):
 
     _attr_name = "Oil Energy Content"
     _attr_native_unit_of_measurement = "kWh/L"
-    _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_icon = "mdi:flash"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
     def native_value(self) -> float:
@@ -382,8 +378,6 @@ class BoilerJuiceCostPerKwhSensor(BoilerJuiceSensor):
 
     _attr_name = "Oil Cost Per kWh"
     _attr_native_unit_of_measurement = "GBP/kWh"
-    _attr_device_class = SensorDeviceClass.MONETARY
-    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_icon = "mdi:currency-gbp"
 
     @property
@@ -425,9 +419,8 @@ class BoilerJuiceSeasonalConsumptionSensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice seasonal consumption sensor."""
 
     _attr_name = "Seasonal Oil Consumption"
-    _attr_native_unit_of_measurement = UnitOfVolume.LITERS
-    _attr_device_class = SensorDeviceClass.VOLUME
-    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "L/day"
+    _attr_icon = "mdi:weather-partly-cloudy"
 
     @property
     def native_value(self) -> float | None:

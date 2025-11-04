@@ -23,6 +23,20 @@
     "reset_consumption": {
       "name": "Reset Consumption",
       "description": "Reset the consumption counters to zero."
+    },
+    "set_consumption": {
+      "name": "Set Consumption",
+      "description": "Manually set the consumption values for the oil tank.",
+      "fields": {
+        "liters": {
+          "name": "Total Consumption",
+          "description": "The total consumption in liters."
+        },
+        "daily": {
+          "name": "Daily Consumption",
+          "description": "The daily consumption in liters."
+        }
+      }
     }
   }
 }
