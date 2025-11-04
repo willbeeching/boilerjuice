@@ -121,7 +121,6 @@ class BoilerJuiceTankVolumeSensor(BoilerJuiceSensor):
     _attr_name = SENSOR_VOLUME
     _attr_native_unit_of_measurement = UnitOfVolume.LITERS
     _attr_device_class = SensorDeviceClass.VOLUME
-    _attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
     def native_value(self) -> int | None:
@@ -136,7 +135,6 @@ class BoilerJuiceUsableVolumeSensor(BoilerJuiceSensor):
     _attr_name = "Usable Oil Volume"
     _attr_native_unit_of_measurement = UnitOfVolume.LITERS
     _attr_device_class = SensorDeviceClass.VOLUME
-    _attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
     def native_value(self) -> int | None:
