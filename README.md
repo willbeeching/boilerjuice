@@ -1,5 +1,10 @@
 # BoilerJuice Integration for Home Assistant
 
+[![CI](https://github.com/willbeeching/boilerjuice/actions/workflows/ci.yaml/badge.svg)](https://github.com/willbeeching/boilerjuice/actions/workflows/ci.yaml)
+[![GitHub Release](https://img.shields.io/github/v/release/willbeeching/boilerjuice)](https://github.com/willbeeching/boilerjuice/releases)
+[![License](https://img.shields.io/github/license/willbeeching/boilerjuice)](LICENSE)
+[![HACS](https://img.shields.io/badge/HACS-Default-orange.svg)](https://github.com/hacs/integration)
+
 This custom integration allows you to monitor your BoilerJuice oil tank details in Home Assistant.
 
 ## ✨ Features
