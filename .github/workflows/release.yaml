@@ -46,11 +46,11 @@ jobs:
           name: ${{ steps.get_version.outputs.VERSION }}
           body: |
             ## What's Changed
-            
+
             ${{ steps.changelog.outputs.CHANGELOG }}
-            
+
             ## Installation
-            
+
             ### HACS (Recommended)
             1. Open HACS
             2. Go to Integrations
@@ -60,12 +60,12 @@ jobs:
             6. Select "Integration" as category
             7. Click "Add"
             8. Find "BoilerJuice" and install
-            
+
             ### Manual
             1. Download `boilerjuice.zip` from the assets below
             2. Extract to `config/custom_components/`
             3. Restart Home Assistant
-            
+
             **Full Changelog**: https://github.com/${{ github.repository }}/compare/${{ steps.prev_tag.outputs.PREV_TAG }}...${{ steps.get_version.outputs.VERSION }}
           draft: false
           prerelease: false
