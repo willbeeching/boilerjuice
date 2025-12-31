@@ -1,5 +1,7 @@
 """Constants for the BoilerJuice integration."""
+
 from __future__ import annotations
+
 from datetime import timedelta
 
 DOMAIN = "boilerjuice"

@@ -1,46 +1,31 @@
 """Sensor platform for BoilerJuice."""
+
 from __future__ import annotations
 
-from homeassistant.components.sensor import (
-    SensorDeviceClass,
-    SensorEntity,
-    SensorStateClass,
-)
+import datetime as dt
+import logging
+from datetime import datetime
+from typing import Any, Dict
+from zoneinfo import ZoneInfo
+
+from homeassistant.components.sensor import (SensorDeviceClass, SensorEntity,
+                                             SensorStateClass)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import (
-    PERCENTAGE,
-    UnitOfVolume,
-    UnitOfEnergy,
-)
+from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfVolume
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.helpers.device_registry import DeviceEntryType
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
-from homeassistant.helpers.entity import DeviceInfo, EntityCategory
-from homeassistant.helpers.device_registry import DeviceEntryType
-from typing import Any, Dict
-from datetime import datetime
-import datetime as dt
-from zoneinfo import ZoneInfo
-import logging
 
-from .const import (
-    DOMAIN,
-    SENSOR_VOLUME,
-    SENSOR_CAPACITY,
-    SENSOR_HEIGHT,
-    UNIT_PERCENTAGE,
-    UNIT_LITRES,
-    UNIT_CM,
-    ATTR_TANK_NAME,
-    ATTR_TANK_SHAPE,
-    ATTR_OIL_TYPE,
-    ATTR_TANK_MODEL,
-    ATTR_TANK_ID,
-    DEFAULT_KWH_PER_LITRE,
-)
+from .const import (ATTR_OIL_TYPE, ATTR_TANK_ID, ATTR_TANK_MODEL,
+                    ATTR_TANK_NAME, ATTR_TANK_SHAPE, DEFAULT_KWH_PER_LITRE,
+                    DOMAIN, SENSOR_CAPACITY, SENSOR_HEIGHT, SENSOR_VOLUME,
+                    UNIT_CM, UNIT_LITRES, UNIT_PERCENTAGE)
 from .coordinator import BoilerJuiceDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -82,6 +67,7 @@ async def async_setup_entry(
         ]
     )
 
+
 class BoilerJuiceSensor(SensorEntity):
     """Base class for BoilerJuice sensors."""
 
@@ -114,6 +100,7 @@ class BoilerJuiceSensor(SensorEntity):
         """Update the entity."""
         await self._coordinator.async_request_refresh()
 
+
 class BoilerJuiceTankVolumeSensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice tank volume sensor.
 
@@ -133,6 +120,7 @@ class BoilerJuiceTankVolumeSensor(BoilerJuiceSensor):
             return None
         return self._coordinator.data.get("current_volume_litres")
 
+
 class BoilerJuiceTankCapacitySensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice tank capacity sensor."""
 
@@ -147,6 +135,7 @@ class BoilerJuiceTankCapacitySensor(BoilerJuiceSensor):
         if not self._coordinator.data:
             return None
         return self._coordinator.data.get("capacity_litres")
+
 
 class BoilerJuiceTankHeightSensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice tank height sensor."""
@@ -163,6 +152,7 @@ class BoilerJuiceTankHeightSensor(BoilerJuiceSensor):
             return None
         return self._coordinator.data.get("height_cm")
 
+
 class BoilerJuiceDailyConsumptionSensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice daily consumption sensor."""
 
@@ -177,6 +167,7 @@ class BoilerJuiceDailyConsumptionSensor(BoilerJuiceSensor):
             return None
         value = self._coordinator.data.get("daily_consumption_usable_liters")
         return round(value, 1) if value is not None else None
+
 
 class BoilerJuiceTotalConsumptionSensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice total consumption sensor."""
@@ -194,6 +185,7 @@ class BoilerJuiceTotalConsumptionSensor(BoilerJuiceSensor):
         value = self._coordinator.data.get("total_consumption_usable_liters")
         return round(value, 1) if value is not None else None
 
+
 class BoilerJuiceTotalConsumptionKwhSensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice total consumption in kWh sensor."""
 
@@ -209,6 +201,7 @@ class BoilerJuiceTotalConsumptionKwhSensor(BoilerJuiceSensor):
             return None
         value = self._coordinator.data.get("total_consumption_usable_kwh")
         return round(value, 1) if value is not None else None
+
 
 class BoilerJuiceIncrementalConsumptionKwhSensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice incremental consumption in kWh sensor."""
@@ -246,19 +239,26 @@ class BoilerJuiceIncrementalConsumptionKwhSensor(BoilerJuiceSensor):
             return self._daily_consumption
 
         # Get the daily consumption in liters
-        daily_consumption_liters = self._coordinator.data.get("daily_consumption_usable_liters")
+        daily_consumption_liters = self._coordinator.data.get(
+            "daily_consumption_usable_liters"
+        )
         if daily_consumption_liters is None:
             return self._daily_consumption
 
         if self._last_check_time:
             # Calculate consumption since last check based on time
-            time_diff = (now - self._last_check_time).total_seconds() / (24 * 3600)  # Fraction of day
+            time_diff = (now - self._last_check_time).total_seconds() / (
+                24 * 3600
+            )  # Fraction of day
             kwh_per_litre = self._coordinator.data.get("kwh_per_litre", 10.35)
-            incremental_consumption = (daily_consumption_liters * kwh_per_litre) * time_diff
+            incremental_consumption = (
+                daily_consumption_liters * kwh_per_litre
+            ) * time_diff
             self._daily_consumption += incremental_consumption
 
         self._last_check_time = now
         return round(self._daily_consumption, 1)
+
 
 class BoilerJuiceDaysUntilEmptySensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice days until empty sensor."""
@@ -278,18 +278,23 @@ class BoilerJuiceDaysUntilEmptySensor(BoilerJuiceSensor):
             return None
 
         # If we have actual consumption data, use it
-        daily_consumption = self._coordinator.data.get("daily_consumption_usable_liters")
+        daily_consumption = self._coordinator.data.get(
+            "daily_consumption_usable_liters"
+        )
         if daily_consumption and daily_consumption > 0:
             return round(usable_volume / daily_consumption, 1)
 
         # Otherwise, estimate based on usable capacity
-        usable_capacity = self._coordinator.data.get("usable_capacity_litres", 510)  # Default to 510L if not specified
+        usable_capacity = self._coordinator.data.get(
+            "usable_capacity_litres", 510
+        )  # Default to 510L if not specified
         if usable_capacity:
             # Assume average daily consumption of 2% of usable capacity
             estimated_daily_consumption = usable_capacity * 0.02
             return round(usable_volume / estimated_daily_consumption, 1)
 
         return None
+
 
 class BoilerJuiceOilLevelSensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice oil level sensor.
@@ -311,6 +316,7 @@ class BoilerJuiceOilLevelSensor(BoilerJuiceSensor):
             return None
         # BoilerJuice now provides one level called "total oil remaining"
         return self._coordinator.data.get("total_level_percentage")
+
 
 class BoilerJuiceOilPriceSensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice oil price sensor."""
@@ -336,8 +342,9 @@ class BoilerJuiceOilPriceSensor(BoilerJuiceSensor):
             return {}
         return {
             "price_pence_per_litre": self._coordinator.data.get("current_price_pence"),
-            "last_updated": self._coordinator.data.get("last_updated")
+            "last_updated": self._coordinator.data.get("last_updated"),
         }
+
 
 class BoilerJuiceKwhPerLitreSensor(BoilerJuiceSensor):
     """Representation of the kWh per litre conversion factor."""
@@ -351,6 +358,7 @@ class BoilerJuiceKwhPerLitreSensor(BoilerJuiceSensor):
     def native_value(self) -> float:
         """Return the kWh per litre conversion factor."""
         return self._coordinator.data.get("kwh_per_litre", DEFAULT_KWH_PER_LITRE)
+
 
 class BoilerJuiceCostPerKwhSensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice cost per kWh sensor."""
@@ -374,6 +382,7 @@ class BoilerJuiceCostPerKwhSensor(BoilerJuiceSensor):
         cost_per_kwh = (oil_price / kwh_per_litre) / 100  # Convert pence to GBP
         return round(cost_per_kwh, 4)
 
+
 class BoilerJuiceLastUpdateSensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice last update time sensor."""
 
@@ -393,6 +402,7 @@ class BoilerJuiceLastUpdateSensor(BoilerJuiceSensor):
             # Use the Home Assistant timezone
             return last_update.replace(tzinfo=ZoneInfo(self.hass.config.time_zone))
         return last_update
+
 
 class BoilerJuiceSeasonalConsumptionSensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice seasonal consumption sensor."""
@@ -421,9 +431,15 @@ class BoilerJuiceSeasonalConsumptionSensor(BoilerJuiceSensor):
             return {}
 
         attributes = {
-            "current_season": seasonal_stats.get("current_season", {}).get("name", "unknown"),
-            "current_season_min": seasonal_stats.get("current_season", {}).get("min", 0),
-            "current_season_max": seasonal_stats.get("current_season", {}).get("max", 0),
+            "current_season": seasonal_stats.get("current_season", {}).get(
+                "name", "unknown"
+            ),
+            "current_season_min": seasonal_stats.get("current_season", {}).get(
+                "min", 0
+            ),
+            "current_season_max": seasonal_stats.get("current_season", {}).get(
+                "max", 0
+            ),
             "winter_average": seasonal_stats.get("winter_avg", 0),
             "spring_average": seasonal_stats.get("spring_avg", 0),
             "summer_average": seasonal_stats.get("summer_avg", 0),

@@ -1,33 +1,27 @@
 """Data update coordinator for BoilerJuice."""
+
 from __future__ import annotations
 
-import logging
-import re
-import os
 import json
-from datetime import datetime, timedelta
-from typing import Union, Dict, Any, List, Tuple
+import logging
+import os
+import re
 import statistics
 from calendar import month_name
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Tuple, Union
 
 from bs4 import BeautifulSoup
-from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.update_coordinator import (DataUpdateCoordinator,
+                                                      UpdateFailed)
 
-from .const import (
-    CONF_EMAIL,
-    CONF_PASSWORD,
-    CONF_TANK_ID,
-    CONF_KWH_PER_LITRE,
-    DEFAULT_KWH_PER_LITRE,
-    DOMAIN,
-    LOGIN_URL,
-    TANKS_URL,
-    ACCOUNT_URL,
-)
+from .const import (ACCOUNT_URL, CONF_EMAIL, CONF_KWH_PER_LITRE, CONF_PASSWORD,
+                    CONF_TANK_ID, DEFAULT_KWH_PER_LITRE, DOMAIN, LOGIN_URL,
+                    TANKS_URL)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,10 +45,13 @@ AUTUMN_MONTHS = [9, 10, 11]
 STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}_consumption_data"
 
+
 class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching BoilerJuice data."""
 
-    def __init__(self, hass: HomeAssistant, config: Union[ConfigEntry, Dict[str, Any]]) -> None:
+    def __init__(
+        self, hass: HomeAssistant, config: Union[ConfigEntry, Dict[str, Any]]
+    ) -> None:
         """Initialize coordinator."""
         super().__init__(
             hass,
@@ -70,7 +67,9 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         self._total_consumption_usable_kwh = 0.0
         self._daily_consumption_usable_liters = 0.0
         self._last_update = None
-        self._kwh_per_litre = self._get_config_value_optional(CONF_KWH_PER_LITRE, DEFAULT_KWH_PER_LITRE)
+        self._kwh_per_litre = self._get_config_value_optional(
+            CONF_KWH_PER_LITRE, DEFAULT_KWH_PER_LITRE
+        )
         # Add list to store daily consumption history
         self._daily_consumption_history = []
         # Add seasonal tracking
@@ -121,7 +120,10 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             return None
 
         # If we have actual consumption data, use it
-        if self._daily_consumption_usable_liters and self._daily_consumption_usable_liters > 0:
+        if (
+            self._daily_consumption_usable_liters
+            and self._daily_consumption_usable_liters > 0
+        ):
             return current_volume / self._daily_consumption_usable_liters
 
         # Otherwise, estimate based on current level and capacity
@@ -146,15 +148,24 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             if self._tank_id and self._tank_id in stored_data:
                 tank_data = stored_data[self._tank_id]
 
-                self._total_consumption_usable_liters = tank_data.get("total_consumption_liters", 0.0)
-                self._total_consumption_usable_kwh = tank_data.get("total_consumption_kwh", 0.0)
-                self._daily_consumption_usable_liters = tank_data.get("daily_consumption_liters", 0.0)
-                self._daily_consumption_history = tank_data.get("consumption_history", [])
+                self._total_consumption_usable_liters = tank_data.get(
+                    "total_consumption_liters", 0.0
+                )
+                self._total_consumption_usable_kwh = tank_data.get(
+                    "total_consumption_kwh", 0.0
+                )
+                self._daily_consumption_usable_liters = tank_data.get(
+                    "daily_consumption_liters", 0.0
+                )
+                self._daily_consumption_history = tank_data.get(
+                    "consumption_history", []
+                )
 
                 # Load consumption history with dates
                 history_with_dates = tank_data.get("consumption_history_with_dates", [])
                 self._consumption_history_with_dates = [
-                    (datetime.fromisoformat(dt), cons) for dt, cons in history_with_dates
+                    (datetime.fromisoformat(dt), cons)
+                    for dt, cons in history_with_dates
                 ]
 
                 # Convert stored string timestamp to datetime if exists
@@ -173,21 +184,32 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                     "Loaded stored consumption data for tank %s: total=%s L, daily=%s L/day",
                     self._tank_id,
                     self._total_consumption_usable_liters,
-                    self._daily_consumption_usable_liters
+                    self._daily_consumption_usable_liters,
                 )
             elif not self._tank_id and stored_data.get("default"):
                 # Fallback to default if no tank ID
                 default_data = stored_data["default"]
 
-                self._total_consumption_usable_liters = default_data.get("total_consumption_liters", 0.0)
-                self._total_consumption_usable_kwh = default_data.get("total_consumption_kwh", 0.0)
-                self._daily_consumption_usable_liters = default_data.get("daily_consumption_liters", 0.0)
-                self._daily_consumption_history = default_data.get("consumption_history", [])
+                self._total_consumption_usable_liters = default_data.get(
+                    "total_consumption_liters", 0.0
+                )
+                self._total_consumption_usable_kwh = default_data.get(
+                    "total_consumption_kwh", 0.0
+                )
+                self._daily_consumption_usable_liters = default_data.get(
+                    "daily_consumption_liters", 0.0
+                )
+                self._daily_consumption_history = default_data.get(
+                    "consumption_history", []
+                )
 
                 # Load consumption history with dates
-                history_with_dates = default_data.get("consumption_history_with_dates", [])
+                history_with_dates = default_data.get(
+                    "consumption_history_with_dates", []
+                )
                 self._consumption_history_with_dates = [
-                    (datetime.fromisoformat(dt), cons) for dt, cons in history_with_dates
+                    (datetime.fromisoformat(dt), cons)
+                    for dt, cons in history_with_dates
                 ]
 
                 # Convert stored string timestamp to datetime if exists
@@ -205,7 +227,7 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.info(
                     "Loaded default stored consumption data: total=%s L, daily=%s L/day",
                     self._total_consumption_usable_liters,
-                    self._daily_consumption_usable_liters
+                    self._daily_consumption_usable_liters,
                 )
 
     def _get_season(self, date: datetime) -> str:
@@ -254,12 +276,7 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             "summer": [],
             "autumn": [],
             "monthly": {},
-            "current_season": {
-                "name": "",
-                "avg": 0.0,
-                "min": 0.0,
-                "max": 0.0
-            }
+            "current_season": {"name": "", "avg": 0.0, "min": 0.0, "max": 0.0},
         }
 
         # Group consumption by season and month using daily totals
@@ -298,7 +315,7 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                 "name": current_season,
                 "avg": round(statistics.mean(seasonal_data[current_season]), 1),
                 "min": round(min(seasonal_data[current_season]), 1),
-                "max": round(max(seasonal_data[current_season]), 1)
+                "max": round(max(seasonal_data[current_season]), 1),
             }
 
         return seasonal_data
@@ -323,7 +340,8 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             "consumption_history": self._daily_consumption_history,
             # Store consumption history with dates as list of [timestamp, consumption] pairs
             "consumption_history_with_dates": [
-                [dt.isoformat(), cons] for dt, cons in self._consumption_history_with_dates
+                [dt.isoformat(), cons]
+                for dt, cons in self._consumption_history_with_dates
             ],
         }
 
@@ -363,7 +381,7 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         _LOGGER.info(
             "Force-set reference values: usable_volume=%s L, total_level=%s%%",
             current_usable_volume,
-            current_total_level
+            current_total_level,
         )
 
         # Save the new reference values
@@ -374,18 +392,22 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         _LOGGER.debug("Accessing tanks page to find tank ID...")
         async with self._session.get(TANKS_URL) as response:
             if response.status != 200:
-                _LOGGER.error("Failed to access tanks page with status %s", response.status)
+                _LOGGER.error(
+                    "Failed to access tanks page with status %s", response.status
+                )
                 return None
 
             text = await response.text()
-            soup = BeautifulSoup(text, 'html.parser')
-            tank_links = soup.find_all('a', href=re.compile(r'/uk/users/tanks/\d+'))
+            soup = BeautifulSoup(text, "html.parser")
+            tank_links = soup.find_all("a", href=re.compile(r"/uk/users/tanks/\d+"))
 
             if not tank_links:
                 _LOGGER.error("Could not find any tank links on the tanks page")
                 return None
 
-            tank_id = re.search(r'/uk/users/tanks/(\d+)', tank_links[0]['href']).group(1)
+            tank_id = re.search(r"/uk/users/tanks/(\d+)", tank_links[0]["href"]).group(
+                1
+            )
             _LOGGER.debug("Found tank ID: %s", tank_id)
             return tank_id
 
@@ -396,7 +418,10 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             return None
 
         # If we have actual consumption data, use it
-        if self._daily_consumption_usable_liters and self._daily_consumption_usable_liters > 0:
+        if (
+            self._daily_consumption_usable_liters
+            and self._daily_consumption_usable_liters > 0
+        ):
             return round(current_volume / self._daily_consumption_usable_liters, 1)
 
         # Otherwise, estimate based on current level and capacity
@@ -413,12 +438,15 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
     async def _get_oil_price(self) -> float:
         """Get the current oil price from the kerosene prices page."""
         try:
-            response = await self._session.get("https://www.boilerjuice.com/kerosene-prices/")
+            response = await self._session.get(
+                "https://www.boilerjuice.com/kerosene-prices/"
+            )
             response.raise_for_status()
             content = await response.text()
 
             # Look for the price in the format "XX.XX pence per litre"
             import re
+
             price_match = re.search(r"(\d+\.\d+)\s*pence per litre", content)
             if price_match:
                 return float(price_match.group(1))
@@ -440,17 +468,19 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("Getting login page for CSRF token...")
             async with self._session.get(LOGIN_URL) as response:
                 if response.status != 200:
-                    _LOGGER.error("Failed to get login page with status %s", response.status)
+                    _LOGGER.error(
+                        "Failed to get login page with status %s", response.status
+                    )
                     raise Exception("Failed to get login page")
 
                 text = await response.text()
-                soup = BeautifulSoup(text, 'html.parser')
-                csrf_token = soup.find('meta', {'name': 'csrf-token'})
+                soup = BeautifulSoup(text, "html.parser")
+                csrf_token = soup.find("meta", {"name": "csrf-token"})
                 if not csrf_token:
                     _LOGGER.error("Could not find CSRF token")
                     raise Exception("Failed to get CSRF token")
 
-                csrf_token = csrf_token['content']
+                csrf_token = csrf_token["content"]
 
             # Login to the site
             login_data = {
@@ -484,20 +514,24 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("Accessing tank page at %s", tank_url)
             async with self._session.get(tank_url) as response:
                 if response.status != 200:
-                    _LOGGER.error("Failed to get tank page with status %s", response.status)
+                    _LOGGER.error(
+                        "Failed to get tank page with status %s", response.status
+                    )
                     raise Exception("Failed to get tank data from BoilerJuice")
 
                 text = await response.text()
-                soup = BeautifulSoup(text, 'html.parser')
+                soup = BeautifulSoup(text, "html.parser")
                 data = {}
 
                 # Get tank level percentage
                 # NOTE: BoilerJuice changed their interface - they no longer provide separate
                 # "total" and "usable" oil levels. They only provide one level now.
-                total_level_input = soup.find('input', {'name': 'percentage'})
-                if total_level_input and total_level_input.get('value'):
-                    data["total_level_percentage"] = int(total_level_input['value'])
-                    _LOGGER.debug("Found total tank level: %s%%", data["total_level_percentage"])
+                total_level_input = soup.find("input", {"name": "percentage"})
+                if total_level_input and total_level_input.get("value"):
+                    data["total_level_percentage"] = int(total_level_input["value"])
+                    _LOGGER.debug(
+                        "Found total tank level: %s%%", data["total_level_percentage"]
+                    )
 
                 # Get usable oil level percentage (or total oil level in new interface)
                 # The div id is still "usable-oil" but now shows "total oil remaining"
@@ -513,97 +547,137 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                         # (BoilerJuice now only provides one level which they call "total")
                         if "total_level_percentage" not in data:
                             data["total_level_percentage"] = level_percentage
-                            _LOGGER.debug("Using oil level as total level (new BoilerJuice interface)")
+                            _LOGGER.debug(
+                                "Using oil level as total level (new BoilerJuice interface)"
+                            )
 
                 # Get tank size
                 # NOTE: BoilerJuice changed from 'tank-size-count' to 'tank_size'
-                tank_size_input = soup.find('input', {'id': 'tank_size'})
-                if tank_size_input and tank_size_input.get('value'):
-                    data["capacity_litres"] = int(tank_size_input['value'])
-                    _LOGGER.debug("Found tank capacity: %s litres", data["capacity_litres"])
+                tank_size_input = soup.find("input", {"id": "tank_size"})
+                if tank_size_input and tank_size_input.get("value"):
+                    data["capacity_litres"] = int(tank_size_input["value"])
+                    _LOGGER.debug(
+                        "Found tank capacity: %s litres", data["capacity_litres"]
+                    )
                 else:
                     # Try old ID format as fallback
-                    tank_size_input = soup.find('input', {'id': 'tank-size-count'})
-                    if tank_size_input and tank_size_input.get('value'):
-                        data["capacity_litres"] = int(tank_size_input['value'])
-                        _LOGGER.debug("Found tank capacity (old format): %s litres", data["capacity_litres"])
+                    tank_size_input = soup.find("input", {"id": "tank-size-count"})
+                    if tank_size_input and tank_size_input.get("value"):
+                        data["capacity_litres"] = int(tank_size_input["value"])
+                        _LOGGER.debug(
+                            "Found tank capacity (old format): %s litres",
+                            data["capacity_litres"],
+                        )
                     else:
                         _LOGGER.debug("Tank size input not found")
 
                 # Get tank height
                 # NOTE: BoilerJuice changed from 'tank-height-count' to 'internal_height'
-                tank_height_input = soup.find('input', {'id': 'internal_height'})
-                if tank_height_input and tank_height_input.get('value'):
-                    data["height_cm"] = int(tank_height_input['value'])
+                tank_height_input = soup.find("input", {"id": "internal_height"})
+                if tank_height_input and tank_height_input.get("value"):
+                    data["height_cm"] = int(tank_height_input["value"])
                     _LOGGER.debug("Found tank height: %s cm", data["height_cm"])
                 else:
                     # Try old ID format as fallback
-                    tank_height_input = soup.find('input', {'id': 'tank-height-count'})
-                    if tank_height_input and tank_height_input.get('value'):
-                        data["height_cm"] = int(tank_height_input['value'])
-                        _LOGGER.debug("Found tank height (old format): %s cm", data["height_cm"])
+                    tank_height_input = soup.find("input", {"id": "tank-height-count"})
+                    if tank_height_input and tank_height_input.get("value"):
+                        data["height_cm"] = int(tank_height_input["value"])
+                        _LOGGER.debug(
+                            "Found tank height (old format): %s cm", data["height_cm"]
+                        )
                     else:
                         _LOGGER.debug("Tank height input not found")
 
                 # Look for volume information in text
-                volume_texts = soup.find_all(string=lambda text: text and any(word in text.lower() for word in ['litre', 'volume', 'oil level']))
+                volume_texts = soup.find_all(
+                    string=lambda text: text
+                    and any(
+                        word in text.lower()
+                        for word in ["litre", "volume", "oil level"]
+                    )
+                )
                 for text in volume_texts:
                     text = text.strip()
 
                     # Extract usable volume
                     if "usable oil" in text.lower():
-                        match = re.search(r'(\d+)\s*litres?\s+of\s+usable\s+oil', text.lower())
+                        match = re.search(
+                            r"(\d+)\s*litres?\s+of\s+usable\s+oil", text.lower()
+                        )
                         if match:
                             data["usable_volume_litres"] = int(match.group(1))
-                            _LOGGER.debug("Found usable volume: %s litres", data["usable_volume_litres"])
+                            _LOGGER.debug(
+                                "Found usable volume: %s litres",
+                                data["usable_volume_litres"],
+                            )
 
                     # Extract total volume - try multiple patterns
                     # Old format: "XXX litres of oil left"
                     # New format: "XXX litres of oil" or "XXXL of total oil remaining"
-                    if "litres of oil left" in text.lower() or "litres of oil" in text.lower():
-                        match = re.search(r'(\d+)\s*litres?\s+of\s+(?:total\s+)?oil', text.lower())
+                    if (
+                        "litres of oil left" in text.lower()
+                        or "litres of oil" in text.lower()
+                    ):
+                        match = re.search(
+                            r"(\d+)\s*litres?\s+of\s+(?:total\s+)?oil", text.lower()
+                        )
                         if not match:
-                            match = re.search(r'(\d+)l\s+of\s+(?:total\s+)?oil', text.lower())
+                            match = re.search(
+                                r"(\d+)l\s+of\s+(?:total\s+)?oil", text.lower()
+                            )
                         if match:
                             data["current_volume_litres"] = int(match.group(1))
-                            _LOGGER.debug("Found current volume: %s litres", data["current_volume_litres"])
+                            _LOGGER.debug(
+                                "Found current volume: %s litres",
+                                data["current_volume_litres"],
+                            )
 
                 # If we found current_volume but not usable_volume, they're now the same
                 # (BoilerJuice simplified their interface)
-                if "current_volume_litres" in data and "usable_volume_litres" not in data:
+                if (
+                    "current_volume_litres" in data
+                    and "usable_volume_litres" not in data
+                ):
                     data["usable_volume_litres"] = data["current_volume_litres"]
-                    _LOGGER.debug("Using current volume as usable volume (new interface)")
+                    _LOGGER.debug(
+                        "Using current volume as usable volume (new interface)"
+                    )
 
                 # Get tank name
-                tank_name_input = soup.find('input', {'id': 'tank_user_tanks_attributes_0_name'})
-                if tank_name_input and tank_name_input.get('value'):
-                    data["name"] = tank_name_input['value']
+                tank_name_input = soup.find(
+                    "input", {"id": "tank_user_tanks_attributes_0_name"}
+                )
+                if tank_name_input and tank_name_input.get("value"):
+                    data["name"] = tank_name_input["value"]
                     _LOGGER.debug("Found tank name: %s", data["name"])
 
                 # Get tank manufacturer/model
-                tank_model_input = soup.find('input', {'id': 'tankModelInput'})
-                if tank_model_input and tank_model_input.get('value'):
-                    model_id = tank_model_input.get('value')
+                tank_model_input = soup.find("input", {"id": "tankModelInput"})
+                if tank_model_input and tank_model_input.get("value"):
+                    model_id = tank_model_input.get("value")
                     data["model_id"] = model_id
                     _LOGGER.debug("Found tank model ID: %s", model_id)
 
                     # Try to find the manufacturer data in the JavaScript
-                    scripts = soup.find_all('script')
+                    scripts = soup.find_all("script")
                     for script in scripts:
-                        if script.string and 'var jsonData = ' in script.string:
+                        if script.string and "var jsonData = " in script.string:
                             _LOGGER.debug("Found jsonData variable")
                             script_text = script.string
-                            start_idx = script_text.find('var jsonData = ')
+                            start_idx = script_text.find("var jsonData = ")
                             if start_idx >= 0:
                                 # Try to find where the JSON array ends
-                                array_start = script_text.find('[', start_idx)
+                                array_start = script_text.find("[", start_idx)
                                 if array_start >= 0:
                                     bracket_count = 1
                                     array_end = array_start + 1
-                                    while array_end < len(script_text) and bracket_count > 0:
-                                        if script_text[array_end] == '[':
+                                    while (
+                                        array_end < len(script_text)
+                                        and bracket_count > 0
+                                    ):
+                                        if script_text[array_end] == "[":
                                             bracket_count += 1
-                                        elif script_text[array_end] == ']':
+                                        elif script_text[array_end] == "]":
                                             bracket_count -= 1
                                         array_end += 1
 
@@ -613,29 +687,40 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                                             json_data = json.loads(json_str)
                                             # Find the manufacturer for our model ID
                                             for item in json_data:
-                                                if str(item.get('id')) == str(model_id):
-                                                    data["model"] = item.get('tank', {}).get('Description')
-                                                    data["manufacturer"] = item.get('tank', {}).get('Brand')
-                                                    _LOGGER.debug("Found manufacturer from JSON: %s", data["model"])
+                                                if str(item.get("id")) == str(model_id):
+                                                    data["model"] = item.get(
+                                                        "tank", {}
+                                                    ).get("Description")
+                                                    data["manufacturer"] = item.get(
+                                                        "tank", {}
+                                                    ).get("Brand")
+                                                    _LOGGER.debug(
+                                                        "Found manufacturer from JSON: %s",
+                                                        data["model"],
+                                                    )
                                                     break
                                         except json.JSONDecodeError as e:
-                                            _LOGGER.error("Failed to parse tank model JSON: %s", e)
+                                            _LOGGER.error(
+                                                "Failed to parse tank model JSON: %s", e
+                                            )
                             break
                 else:
                     _LOGGER.debug("Could not find tank model ID")
 
                 # Get tank shape
-                for shape in ['cuboid', 'horizontal_cylinder', 'vertical_cylinder']:
-                    shape_input = soup.find('input', {'type': 'radio', 'name': 'tank-shape', 'value': shape})
-                    if shape_input and shape_input.get('checked'):
-                        data["shape"] = shape.replace('_', ' ').title()
+                for shape in ["cuboid", "horizontal_cylinder", "vertical_cylinder"]:
+                    shape_input = soup.find(
+                        "input", {"type": "radio", "name": "tank-shape", "value": shape}
+                    )
+                    if shape_input and shape_input.get("checked"):
+                        data["shape"] = shape.replace("_", " ").title()
                         _LOGGER.debug("Found tank shape: %s", data["shape"])
                         break
 
                 # Get oil type
-                oil_type_select = soup.find('select', {'id': 'tank_oil_type_id'})
+                oil_type_select = soup.find("select", {"id": "tank_oil_type_id"})
                 if oil_type_select:
-                    selected_option = oil_type_select.find('option', selected=True)
+                    selected_option = oil_type_select.find("option", selected=True)
                     if selected_option:
                         data["oil_type"] = selected_option.text
                         _LOGGER.debug("Found oil type: %s", data["oil_type"])
@@ -657,12 +742,17 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                     current_usable_volume,
                     current_total_level,
                     self._previous_usable_volume,
-                    self._previous_total_level
+                    self._previous_total_level,
                 )
 
                 # If we don't have previous values, set them without calculating consumption
-                if self._previous_usable_volume is None or self._previous_total_level is None:
-                    _LOGGER.info("First update or reference values missing - setting initial values without calculating consumption")
+                if (
+                    self._previous_usable_volume is None
+                    or self._previous_total_level is None
+                ):
+                    _LOGGER.info(
+                        "First update or reference values missing - setting initial values without calculating consumption"
+                    )
                     self.force_consumption_reference(data)
 
                     # For manual consumption based on current value
@@ -675,22 +765,29 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                             "Estimated consumption based on current level (%s%%): %s L out of %s L capacity",
                             current_total_level,
                             round(estimated_used, 1),
-                            capacity
+                            capacity,
                         )
                 else:
                     # Track consumption based on direct volume change if available
                     consumption_detected = False
-                    if self._previous_usable_volume is not None and current_usable_volume < self._previous_usable_volume:
-                        liters_used = self._previous_usable_volume - current_usable_volume
+                    if (
+                        self._previous_usable_volume is not None
+                        and current_usable_volume < self._previous_usable_volume
+                    ):
+                        liters_used = (
+                            self._previous_usable_volume - current_usable_volume
+                        )
                         _LOGGER.info(
                             "Detected consumption from volume change: %s L (from %s L to %s L)",
                             liters_used,
                             self._previous_usable_volume,
-                            current_usable_volume
+                            current_usable_volume,
                         )
 
                         self._total_consumption_usable_liters += liters_used
-                        self._total_consumption_usable_kwh += liters_used * LITERS_TO_KWH
+                        self._total_consumption_usable_kwh += (
+                            liters_used * LITERS_TO_KWH
+                        )
                         consumption_detected = True
 
                         # Update consumption history with dates
@@ -700,11 +797,15 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                         daily_totals = self._calculate_daily_totals_from_history()
 
                         # Update the simplified daily history (for backwards compatibility)
-                        self._daily_consumption_history = list(daily_totals.values())[-CONSUMPTION_ROLLING_DAYS:]
+                        self._daily_consumption_history = list(daily_totals.values())[
+                            -CONSUMPTION_ROLLING_DAYS:
+                        ]
 
                         # Calculate average daily consumption
                         if self._daily_consumption_history:
-                            self._daily_consumption_usable_liters = sum(self._daily_consumption_history) / len(self._daily_consumption_history)
+                            self._daily_consumption_usable_liters = sum(
+                                self._daily_consumption_history
+                            ) / len(self._daily_consumption_history)
                         else:
                             self._daily_consumption_usable_liters = 0.0
 
@@ -720,60 +821,75 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                             current_season.get("name", "season"),
                             current_season.get("avg", 0),
                             current_season.get("min", 0),
-                            current_season.get("max", 0)
+                            current_season.get("max", 0),
                         )
 
                         # Add seasonal stats to data
-                        data.update({
-                            "seasonal_stats": seasonal_stats
-                        })
+                        data.update({"seasonal_stats": seasonal_stats})
 
                         # Update the last update timestamp since consumption was detected
                         self._last_update = now
 
                     # If no consumption detected from volume, check percentage change
-                    if not consumption_detected and self._previous_total_level is not None:
+                    if (
+                        not consumption_detected
+                        and self._previous_total_level is not None
+                    ):
                         _LOGGER.debug(
                             "Checking level change: current=%s%%, previous=%s%%",
                             current_total_level,
-                            self._previous_total_level
+                            self._previous_total_level,
                         )
 
                         if current_total_level < self._previous_total_level:
                             # Calculate liters based on percentage change
                             capacity = data.get("capacity_litres")
                             if capacity:
-                                percent_change = self._previous_total_level - current_total_level
+                                percent_change = (
+                                    self._previous_total_level - current_total_level
+                                )
                                 liters_used = (percent_change / 100) * capacity
                                 _LOGGER.info(
                                     "Detected consumption from level change: %s%% (%s L) - tank capacity: %s L",
                                     percent_change,
                                     liters_used,
-                                    capacity
+                                    capacity,
                                 )
 
                                 self._total_consumption_usable_liters += liters_used
-                                self._total_consumption_usable_kwh += liters_used * LITERS_TO_KWH
+                                self._total_consumption_usable_kwh += (
+                                    liters_used * LITERS_TO_KWH
+                                )
                                 consumption_detected = True
 
                                 # Update consumption history with dates
-                                self._consumption_history_with_dates.append((now, liters_used))
+                                self._consumption_history_with_dates.append(
+                                    (now, liters_used)
+                                )
 
                                 # Calculate daily totals from history grouped by date
-                                daily_totals = self._calculate_daily_totals_from_history()
+                                daily_totals = (
+                                    self._calculate_daily_totals_from_history()
+                                )
 
                                 # Update the simplified daily history (for backwards compatibility)
-                                self._daily_consumption_history = list(daily_totals.values())[-CONSUMPTION_ROLLING_DAYS:]
+                                self._daily_consumption_history = list(
+                                    daily_totals.values()
+                                )[-CONSUMPTION_ROLLING_DAYS:]
 
                                 # Calculate average daily consumption
                                 if self._daily_consumption_history:
-                                    self._daily_consumption_usable_liters = sum(self._daily_consumption_history) / len(self._daily_consumption_history)
+                                    self._daily_consumption_usable_liters = sum(
+                                        self._daily_consumption_history
+                                    ) / len(self._daily_consumption_history)
                                 else:
                                     self._daily_consumption_usable_liters = 0.0
 
                                 # Calculate seasonal statistics
                                 seasonal_stats = self._calculate_seasonal_stats()
-                                current_season = seasonal_stats.get("current_season", {})
+                                current_season = seasonal_stats.get(
+                                    "current_season", {}
+                                )
 
                                 _LOGGER.info(
                                     "Updated daily consumption to %s L/day (rolling %d-day average). "
@@ -783,13 +899,11 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                                     current_season.get("name", "season"),
                                     current_season.get("avg", 0),
                                     current_season.get("min", 0),
-                                    current_season.get("max", 0)
+                                    current_season.get("max", 0),
                                 )
 
                                 # Add seasonal stats to data
-                                data.update({
-                                    "seasonal_stats": seasonal_stats
-                                })
+                                data.update({"seasonal_stats": seasonal_stats})
 
                                 # Update the last update timestamp since consumption was detected
                                 self._last_update = now
@@ -799,51 +913,79 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                         # Consumption detected - update reference values
                         self._previous_usable_volume = current_usable_volume
                         self._previous_total_level = current_total_level
-                    elif current_usable_volume > self._previous_usable_volume or current_total_level > self._previous_total_level:
+                    elif (
+                        current_usable_volume > self._previous_usable_volume
+                        or current_total_level > self._previous_total_level
+                    ):
                         # Tank was refilled - reset reference values without recording consumption
                         _LOGGER.info(
                             "Tank refill detected: volume %s -> %s L, level %s%% -> %s%%",
                             self._previous_usable_volume,
                             current_usable_volume,
                             self._previous_total_level,
-                            current_total_level
+                            current_total_level,
                         )
                         self._previous_usable_volume = current_usable_volume
                         self._previous_total_level = current_total_level
                         self._last_update = now
 
                 # Add consumption data to tank data
-                data["total_consumption_usable_liters"] = self._total_consumption_usable_liters
-                data["total_consumption_usable_kwh"] = self._total_consumption_usable_kwh
-                data["daily_consumption_usable_liters"] = self._daily_consumption_usable_liters
+                data["total_consumption_usable_liters"] = (
+                    self._total_consumption_usable_liters
+                )
+                data["total_consumption_usable_kwh"] = (
+                    self._total_consumption_usable_kwh
+                )
+                data["daily_consumption_usable_liters"] = (
+                    self._daily_consumption_usable_liters
+                )
                 data["days_until_empty"] = self._calculate_days_until_empty(data)
 
                 _LOGGER.info(
                     "Consumption data: total=%s L, daily=%s L/day, total_kwh=%s",
                     round(self._total_consumption_usable_liters, 1),
                     round(self._daily_consumption_usable_liters, 1),
-                    round(self._total_consumption_usable_kwh, 1)
+                    round(self._total_consumption_usable_kwh, 1),
                 )
 
                 # Ensure correct kWh calculation (sometimes this might be out of sync)
-                if abs(self._total_consumption_usable_kwh - (self._total_consumption_usable_liters * LITERS_TO_KWH)) > 0.1:
+                if (
+                    abs(
+                        self._total_consumption_usable_kwh
+                        - (self._total_consumption_usable_liters * LITERS_TO_KWH)
+                    )
+                    > 0.1
+                ):
                     _LOGGER.info(
                         "Correcting kWh value from %s to %s",
                         self._total_consumption_usable_kwh,
+                        self._total_consumption_usable_liters * LITERS_TO_KWH,
+                    )
+                    self._total_consumption_usable_kwh = (
                         self._total_consumption_usable_liters * LITERS_TO_KWH
                     )
-                    self._total_consumption_usable_kwh = self._total_consumption_usable_liters * LITERS_TO_KWH
-                    data["total_consumption_usable_kwh"] = self._total_consumption_usable_kwh
+                    data["total_consumption_usable_kwh"] = (
+                        self._total_consumption_usable_kwh
+                    )
 
                 # Get current oil price from kerosene prices page
                 try:
-                    async with self._session.get("https://www.boilerjuice.com/kerosene-prices/") as price_response:
+                    async with self._session.get(
+                        "https://www.boilerjuice.com/kerosene-prices/"
+                    ) as price_response:
                         if price_response.status == 200:
                             price_text = await price_response.text()
-                            price_match = re.search(r"(\d+\.\d+)\s*pence per litre", price_text)
+                            price_match = re.search(
+                                r"(\d+\.\d+)\s*pence per litre", price_text
+                            )
                             if price_match:
-                                data["current_price_pence"] = float(price_match.group(1))
-                                _LOGGER.debug("Found current oil price: %s pence per litre", data["current_price_pence"])
+                                data["current_price_pence"] = float(
+                                    price_match.group(1)
+                                )
+                                _LOGGER.debug(
+                                    "Found current oil price: %s pence per litre",
+                                    data["current_price_pence"],
+                                )
                 except Exception as e:
                     _LOGGER.error("Error getting oil price: %s", e)
 

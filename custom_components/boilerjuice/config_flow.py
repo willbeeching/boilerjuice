@@ -1,18 +1,20 @@
 """Config flow for BoilerJuice."""
+
 from __future__ import annotations
 
 import logging
 from typing import Any
 
+import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
-import homeassistant.helpers.config_validation as cv
 
-from .const import CONF_TANK_ID, DOMAIN, CONF_KWH_PER_LITRE, DEFAULT_KWH_PER_LITRE
+from .const import (CONF_KWH_PER_LITRE, CONF_TANK_ID, DEFAULT_KWH_PER_LITRE,
+                    DOMAIN)
 from .coordinator import BoilerJuiceDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -22,9 +24,12 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_EMAIL): str,
         vol.Required(CONF_PASSWORD): str,
         vol.Optional(CONF_TANK_ID): str,
-        vol.Optional(CONF_KWH_PER_LITRE, default=DEFAULT_KWH_PER_LITRE): vol.Coerce(float),
+        vol.Optional(CONF_KWH_PER_LITRE, default=DEFAULT_KWH_PER_LITRE): vol.Coerce(
+            float
+        ),
     }
 )
+
 
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
     """Validate the user input allows us to connect."""
@@ -49,12 +54,15 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
 
     return {"title": title}
 
+
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for BoilerJuice."""
 
     VERSION = 1
 
-    async def async_step_import(self, import_config: dict[str, Any] | None) -> FlowResult:
+    async def async_step_import(
+        self, import_config: dict[str, Any] | None
+    ) -> FlowResult:
         """Import a config entry from configuration.yaml."""
         return await self.async_step_user(import_config)
 
@@ -86,8 +94,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+
 class InvalidAuth(HomeAssistantError):
     """Error to indicate there is invalid auth."""
+
 
 class CannotConnect(HomeAssistantError):
     """Error to indicate we cannot connect to the service."""
