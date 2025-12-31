@@ -19,7 +19,10 @@ jobs:
 
       - name: Get version from tag
         id: get_version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "VERSION_NUMBER=${VERSION#v}" >> $GITHUB_OUTPUT
 
       - name: Get previous tag
         id: prev_tag
@@ -43,33 +46,36 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.get_version.outputs.VERSION }}
-          name: ${{ steps.get_version.outputs.VERSION }}
+          name: "BoilerJuice ${{ steps.get_version.outputs.VERSION_NUMBER }}"
           body: |
-            ## What's Changed
+            ## 📋 Changes in this Release
 
             ${{ steps.changelog.outputs.CHANGELOG }}
 
-            ## Installation
+            ## 📦 Installation
 
             ### HACS (Recommended)
-            1. Open HACS
-            2. Go to Integrations
-            3. Click the three dots in the top right
-            4. Select "Custom repositories"
-            5. Add this repository URL
-            6. Select "Integration" as category
-            7. Click "Add"
-            8. Find "BoilerJuice" and install
+            1. Open HACS in Home Assistant
+            2. Go to **Integrations**
+            3. Click the three dots (⋮) in the top right
+            4. Select **Custom repositories**
+            5. Add this repository URL: `https://github.com/willbeeching/boilerjuice`
+            6. Select **Integration** as category
+            7. Click **Add**
+            8. Find **BoilerJuice** and click **Download**
+            9. Restart Home Assistant
 
-            ### Manual
+            ### Manual Installation
             1. Download `boilerjuice.zip` from the assets below
-            2. Extract to `config/custom_components/`
+            2. Extract to your Home Assistant `config/custom_components/` directory
             3. Restart Home Assistant
+            4. Add the integration via **Settings** → **Devices & Services** → **Add Integration**
+
+            ---
 
             **Full Changelog**: https://github.com/${{ github.repository }}/compare/${{ steps.prev_tag.outputs.PREV_TAG }}...${{ steps.get_version.outputs.VERSION }}
           draft: false
           prerelease: false
-          generate_release_notes: true
 
       - name: Create ZIP archive
         run: |
