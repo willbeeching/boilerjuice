@@ -134,8 +134,8 @@ Manually set consumption values (useful for initializing with known values).
 ```yaml
 service: boilerjuice.set_consumption
 data:
-  liters: 500  # Total litres consumed
-  daily: 15    # Optional: daily consumption rate in L/day
+  liters: 500 # Total litres consumed
+  daily: 15 # Optional: daily consumption rate in L/day
 ```
 
 ## Migration from v1.0.x
@@ -145,9 +145,10 @@ If you're upgrading from v1.0.x or earlier, please note:
 ### Breaking Changes
 
 1. **Simplified Sensors**: Duplicate sensors have been removed
+
    - `Total Oil Level` and `Usable Oil Level` → now just `Oil Level`
    - `Usable Oil Volume` → now just `Tank Volume`
-   
+
 2. **Update Your Dashboards**: Replace old sensor entities with new ones
    - `sensor.my_tank_total_oil_level` → `sensor.my_tank_oil_level`
    - `sensor.my_tank_usable_oil_level` → `sensor.my_tank_oil_level`
@@ -156,6 +157,7 @@ If you're upgrading from v1.0.x or earlier, please note:
 ### Required Actions After Upgrade
 
 1. **Reset consumption tracking** to clear stuck reference values:
+
    ```yaml
    service: boilerjuice.reset_consumption
    ```
@@ -163,14 +165,6 @@ If you're upgrading from v1.0.x or earlier, please note:
 2. **Update automations and dashboards** that reference old sensor entities
 
 3. Old sensor entities will become `unavailable` - you can safely remove them from the entity registry
-
-### What's Fixed in v1.1.0
-
-- ✅ **Critical Bug**: Reference values were updating daily instead of only when level changed
-- ✅ **Consumption tracking**: Now correctly spreads consumption across actual days
-- ✅ **Refill detection**: Automatically handles tank refills
-- ✅ **Stuck sensors**: Last Updated, Daily Consumption, Total kWh now work correctly
-- ✅ **BoilerJuice changes**: Updated scraper for new website interface
 
 ## Development
 
