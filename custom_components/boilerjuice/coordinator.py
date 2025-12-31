@@ -492,40 +492,58 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                 data = {}
 
                 # Get tank level percentage
+                # NOTE: BoilerJuice changed their interface - they no longer provide separate
+                # "total" and "usable" oil levels. They only provide one level now.
                 total_level_input = soup.find('input', {'name': 'percentage'})
                 if total_level_input and total_level_input.get('value'):
                     data["total_level_percentage"] = int(total_level_input['value'])
                     _LOGGER.debug("Found total tank level: %s%%", data["total_level_percentage"])
 
-                # Get usable oil level percentage
+                # Get usable oil level percentage (or total oil level in new interface)
+                # The div id is still "usable-oil" but now shows "total oil remaining"
                 usable_level_div = soup.find("div", {"id": "usable-oil"})
                 if usable_level_div:
                     oil_level = usable_level_div.find("div", {"class": "oil-level"})
                     if oil_level and oil_level.get("data-percentage"):
-                        data["usable_level_percentage"] = float(oil_level["data-percentage"])
-                        _LOGGER.debug("Found usable tank level: %s%%", data["usable_level_percentage"])
+                        level_percentage = float(oil_level["data-percentage"])
+                        data["usable_level_percentage"] = level_percentage
+                        _LOGGER.debug("Found oil level: %s%%", level_percentage)
+
+                        # If we didn't find the old total_level field, use this as total too
+                        # (BoilerJuice now only provides one level which they call "total")
+                        if "total_level_percentage" not in data:
+                            data["total_level_percentage"] = level_percentage
+                            _LOGGER.debug("Using oil level as total level (new BoilerJuice interface)")
 
                 # Get tank size
-                tank_size_input = soup.find('input', {'id': 'tank-size-count'})
+                # NOTE: BoilerJuice changed from 'tank-size-count' to 'tank_size'
+                tank_size_input = soup.find('input', {'id': 'tank_size'})
                 if tank_size_input and tank_size_input.get('value'):
                     data["capacity_litres"] = int(tank_size_input['value'])
                     _LOGGER.debug("Found tank capacity: %s litres", data["capacity_litres"])
                 else:
-                    _LOGGER.debug("Tank size input not found")
-                    size_context = soup.find('input', {'name': re.compile(r'.*size.*', re.I)})
-                    if size_context:
-                        _LOGGER.debug("Found similar size input: %s", size_context)
+                    # Try old ID format as fallback
+                    tank_size_input = soup.find('input', {'id': 'tank-size-count'})
+                    if tank_size_input and tank_size_input.get('value'):
+                        data["capacity_litres"] = int(tank_size_input['value'])
+                        _LOGGER.debug("Found tank capacity (old format): %s litres", data["capacity_litres"])
+                    else:
+                        _LOGGER.debug("Tank size input not found")
 
                 # Get tank height
-                tank_height_input = soup.find('input', {'id': 'tank-height-count'})
+                # NOTE: BoilerJuice changed from 'tank-height-count' to 'internal_height'
+                tank_height_input = soup.find('input', {'id': 'internal_height'})
                 if tank_height_input and tank_height_input.get('value'):
                     data["height_cm"] = int(tank_height_input['value'])
                     _LOGGER.debug("Found tank height: %s cm", data["height_cm"])
                 else:
-                    _LOGGER.debug("Tank height input not found")
-                    height_context = soup.find('input', {'name': re.compile(r'.*height.*', re.I)})
-                    if height_context:
-                        _LOGGER.debug("Found similar height input: %s", height_context)
+                    # Try old ID format as fallback
+                    tank_height_input = soup.find('input', {'id': 'tank-height-count'})
+                    if tank_height_input and tank_height_input.get('value'):
+                        data["height_cm"] = int(tank_height_input['value'])
+                        _LOGGER.debug("Found tank height (old format): %s cm", data["height_cm"])
+                    else:
+                        _LOGGER.debug("Tank height input not found")
 
                 # Look for volume information in text
                 volume_texts = soup.find_all(string=lambda text: text and any(word in text.lower() for word in ['litre', 'volume', 'oil level']))
@@ -539,12 +557,22 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                             data["usable_volume_litres"] = int(match.group(1))
                             _LOGGER.debug("Found usable volume: %s litres", data["usable_volume_litres"])
 
-                    # Extract total volume
-                    elif "litres of oil left" in text.lower():
-                        match = re.search(r'(\d+)\s*litres?\s+of\s+oil\s+left', text.lower())
+                    # Extract total volume - try multiple patterns
+                    # Old format: "XXX litres of oil left"
+                    # New format: "XXX litres of oil" or "XXXL of total oil remaining"
+                    if "litres of oil left" in text.lower() or "litres of oil" in text.lower():
+                        match = re.search(r'(\d+)\s*litres?\s+of\s+(?:total\s+)?oil', text.lower())
+                        if not match:
+                            match = re.search(r'(\d+)l\s+of\s+(?:total\s+)?oil', text.lower())
                         if match:
                             data["current_volume_litres"] = int(match.group(1))
-                            _LOGGER.debug("Found total volume: %s litres", data["current_volume_litres"])
+                            _LOGGER.debug("Found current volume: %s litres", data["current_volume_litres"])
+
+                # If we found current_volume but not usable_volume, they're now the same
+                # (BoilerJuice simplified their interface)
+                if "current_volume_litres" in data and "usable_volume_litres" not in data:
+                    data["usable_volume_litres"] = data["current_volume_litres"]
+                    _LOGGER.debug("Using current volume as usable volume (new interface)")
 
                 # Get tank name
                 tank_name_input = soup.find('input', {'id': 'tank_user_tanks_attributes_0_name'})
@@ -766,10 +794,23 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                                 # Update the last update timestamp since consumption was detected
                                 self._last_update = now
 
-                    # Update previous values regardless of consumption
-                    self._previous_usable_volume = current_usable_volume
-                    self._previous_total_level = current_total_level
-                    # Only update _last_update if consumption was detected (moved above)
+                    # Update previous values only if consumption was detected OR if this is a refill
+                    if consumption_detected:
+                        # Consumption detected - update reference values
+                        self._previous_usable_volume = current_usable_volume
+                        self._previous_total_level = current_total_level
+                    elif current_usable_volume > self._previous_usable_volume or current_total_level > self._previous_total_level:
+                        # Tank was refilled - reset reference values without recording consumption
+                        _LOGGER.info(
+                            "Tank refill detected: volume %s -> %s L, level %s%% -> %s%%",
+                            self._previous_usable_volume,
+                            current_usable_volume,
+                            self._previous_total_level,
+                            current_total_level
+                        )
+                        self._previous_usable_volume = current_usable_volume
+                        self._previous_total_level = current_total_level
+                        self._last_update = now
 
                 # Add consumption data to tank data
                 data["total_consumption_usable_liters"] = self._total_consumption_usable_liters

@@ -64,10 +64,9 @@ async def async_setup_entry(
 
     async_add_entities(
         [
-            BoilerJuiceTotalOilLevelSensor(coordinator, entry.entry_id),
-            BoilerJuiceUsableOilLevelSensor(coordinator, entry.entry_id),
+            # Simplified sensors - BoilerJuice now only provides one oil level (not separate total/usable)
+            BoilerJuiceOilLevelSensor(coordinator, entry.entry_id),
             BoilerJuiceTankVolumeSensor(coordinator, entry.entry_id),
-            BoilerJuiceUsableVolumeSensor(coordinator, entry.entry_id),
             BoilerJuiceTankCapacitySensor(coordinator, entry.entry_id),
             BoilerJuiceDailyConsumptionSensor(coordinator, entry.entry_id),
             BoilerJuiceTotalConsumptionSensor(coordinator, entry.entry_id),
@@ -116,11 +115,16 @@ class BoilerJuiceSensor(SensorEntity):
         await self._coordinator.async_request_refresh()
 
 class BoilerJuiceTankVolumeSensor(BoilerJuiceSensor):
-    """Representation of a BoilerJuice tank volume sensor."""
+    """Representation of a BoilerJuice tank volume sensor.
+
+    Note: BoilerJuice simplified their interface and now only provides one volume
+    (previously they had separate "current" and "usable" volumes).
+    """
 
     _attr_name = SENSOR_VOLUME
     _attr_native_unit_of_measurement = UnitOfVolume.LITERS
     _attr_device_class = SensorDeviceClass.VOLUME
+    _attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
     def native_value(self) -> int | None:
@@ -128,20 +132,6 @@ class BoilerJuiceTankVolumeSensor(BoilerJuiceSensor):
         if not self._coordinator.data:
             return None
         return self._coordinator.data.get("current_volume_litres")
-
-class BoilerJuiceUsableVolumeSensor(BoilerJuiceSensor):
-    """Representation of a BoilerJuice usable oil volume sensor."""
-
-    _attr_name = "Usable Oil Volume"
-    _attr_native_unit_of_measurement = UnitOfVolume.LITERS
-    _attr_device_class = SensorDeviceClass.VOLUME
-
-    @property
-    def native_value(self) -> int | None:
-        """Return the state of the sensor."""
-        if not self._coordinator.data:
-            return None
-        return self._coordinator.data.get("usable_volume_litres")
 
 class BoilerJuiceTankCapacitySensor(BoilerJuiceSensor):
     """Representation of a BoilerJuice tank capacity sensor."""
@@ -301,10 +291,15 @@ class BoilerJuiceDaysUntilEmptySensor(BoilerJuiceSensor):
 
         return None
 
-class BoilerJuiceUsableOilLevelSensor(BoilerJuiceSensor):
-    """Representation of a BoilerJuice usable oil level sensor."""
+class BoilerJuiceOilLevelSensor(BoilerJuiceSensor):
+    """Representation of a BoilerJuice oil level sensor.
 
-    _attr_name = "Usable Oil Level"
+    Note: BoilerJuice simplified their interface and now only provides one oil level
+    (previously they had separate "total" and "usable" levels).
+    They now call it "total oil remaining".
+    """
+
+    _attr_name = "Oil Level"
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_device_class = SensorDeviceClass.BATTERY
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -314,21 +309,7 @@ class BoilerJuiceUsableOilLevelSensor(BoilerJuiceSensor):
         """Return the state of the sensor."""
         if not self._coordinator.data:
             return None
-        return self._coordinator.data.get("usable_level_percentage")
-
-class BoilerJuiceTotalOilLevelSensor(BoilerJuiceSensor):
-    """Representation of a BoilerJuice total oil level sensor."""
-
-    _attr_name = "Total Oil Level"
-    _attr_native_unit_of_measurement = PERCENTAGE
-    _attr_device_class = SensorDeviceClass.BATTERY
-    _attr_state_class = SensorStateClass.MEASUREMENT
-
-    @property
-    def native_value(self) -> float | None:
-        """Return the state of the sensor."""
-        if not self._coordinator.data:
-            return None
+        # BoilerJuice now provides one level called "total oil remaining"
         return self._coordinator.data.get("total_level_percentage")
 
 class BoilerJuiceOilPriceSensor(BoilerJuiceSensor):
