@@ -8,8 +8,11 @@ from datetime import datetime
 from typing import Any, Dict
 from zoneinfo import ZoneInfo
 
-from homeassistant.components.sensor import (SensorDeviceClass, SensorEntity,
-                                             SensorStateClass)
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfVolume
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -18,10 +21,21 @@ from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
-from .const import (ATTR_OIL_TYPE, ATTR_TANK_ID, ATTR_TANK_MODEL,
-                    ATTR_TANK_NAME, ATTR_TANK_SHAPE, DEFAULT_KWH_PER_LITRE,
-                    DOMAIN, SENSOR_CAPACITY, SENSOR_HEIGHT, SENSOR_VOLUME,
-                    UNIT_CM, UNIT_LITRES, UNIT_PERCENTAGE)
+from .const import (
+    ATTR_OIL_TYPE,
+    ATTR_TANK_ID,
+    ATTR_TANK_MODEL,
+    ATTR_TANK_NAME,
+    ATTR_TANK_SHAPE,
+    DEFAULT_KWH_PER_LITRE,
+    DOMAIN,
+    SENSOR_CAPACITY,
+    SENSOR_HEIGHT,
+    SENSOR_VOLUME,
+    UNIT_CM,
+    UNIT_LITRES,
+    UNIT_PERCENTAGE,
+)
 from .coordinator import BoilerJuiceDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
