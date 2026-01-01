@@ -797,8 +797,79 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                         )
                         consumption_detected = True
 
-                        # Update consumption history with dates
-                        self._consumption_history_with_dates.append((now, liters_used))
+                        # Spread consumption across the days it occurred
+                        if self._last_update:
+                            time_elapsed = now - self._last_update
+                            days_elapsed = time_elapsed.total_seconds() / 86400
+
+                            _LOGGER.debug(
+                                "Spreading %s L over %.2f days (from %s to %s)",
+                                liters_used,
+                                days_elapsed,
+                                self._last_update,
+                                now,
+                            )
+
+                            # If consumption spans multiple calendar days, split it proportionally
+                            if self._last_update.date() != now.date():
+                                current_date = self._last_update
+                                remaining_liters = liters_used
+
+                                while current_date.date() <= now.date():
+                                    # Calculate how many hours of this day are in the consumption period
+                                    day_start = max(current_date, self._last_update)
+                                    day_end = min(
+                                        datetime.combine(
+                                            current_date.date(), datetime.max.time()
+                                        ),
+                                        now,
+                                    )
+
+                                    if current_date.date() == now.date():
+                                        day_end = now
+
+                                    hours_this_day = (
+                                        day_end - day_start
+                                    ).total_seconds() / 3600
+                                    total_hours = time_elapsed.total_seconds() / 3600
+
+                                    # Proportional consumption for this day
+                                    day_consumption = (
+                                        hours_this_day / total_hours
+                                    ) * liters_used
+
+                                    self._consumption_history_with_dates.append(
+                                        (
+                                            current_date.replace(
+                                                hour=12, minute=0, second=0
+                                            ),
+                                            day_consumption,
+                                        )
+                                    )
+
+                                    _LOGGER.debug(
+                                        "Added %.1f L to %s (%.1f hours of %.1f total hours)",
+                                        day_consumption,
+                                        current_date.date(),
+                                        hours_this_day,
+                                        total_hours,
+                                    )
+
+                                    # Move to next day
+                                    current_date = datetime.combine(
+                                        current_date.date() + timedelta(days=1),
+                                        datetime.min.time(),
+                                    )
+                            else:
+                                # All consumption happened on the same day
+                                self._consumption_history_with_dates.append(
+                                    (now, liters_used)
+                                )
+                        else:
+                            # No previous timestamp, just add to current day
+                            self._consumption_history_with_dates.append(
+                                (now, liters_used)
+                            )
 
                         # Calculate daily totals from history grouped by date
                         daily_totals = self._calculate_daily_totals_from_history()
@@ -869,10 +940,83 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                                 )
                                 consumption_detected = True
 
-                                # Update consumption history with dates
-                                self._consumption_history_with_dates.append(
-                                    (now, liters_used)
-                                )
+                                # Spread consumption across the days it occurred
+                                if self._last_update:
+                                    time_elapsed = now - self._last_update
+                                    days_elapsed = time_elapsed.total_seconds() / 86400
+
+                                    _LOGGER.debug(
+                                        "Spreading %s L over %.2f days (from %s to %s)",
+                                        liters_used,
+                                        days_elapsed,
+                                        self._last_update,
+                                        now,
+                                    )
+
+                                    # If consumption spans multiple calendar days, split it proportionally
+                                    if self._last_update.date() != now.date():
+                                        current_date = self._last_update
+
+                                        while current_date.date() <= now.date():
+                                            # Calculate how many hours of this day are in the consumption period
+                                            day_start = max(
+                                                current_date, self._last_update
+                                            )
+                                            day_end = min(
+                                                datetime.combine(
+                                                    current_date.date(),
+                                                    datetime.max.time(),
+                                                ),
+                                                now,
+                                            )
+
+                                            if current_date.date() == now.date():
+                                                day_end = now
+
+                                            hours_this_day = (
+                                                day_end - day_start
+                                            ).total_seconds() / 3600
+                                            total_hours = (
+                                                time_elapsed.total_seconds() / 3600
+                                            )
+
+                                            # Proportional consumption for this day
+                                            day_consumption = (
+                                                hours_this_day / total_hours
+                                            ) * liters_used
+
+                                            self._consumption_history_with_dates.append(
+                                                (
+                                                    current_date.replace(
+                                                        hour=12, minute=0, second=0
+                                                    ),
+                                                    day_consumption,
+                                                )
+                                            )
+
+                                            _LOGGER.debug(
+                                                "Added %.1f L to %s (%.1f hours of %.1f total hours)",
+                                                day_consumption,
+                                                current_date.date(),
+                                                hours_this_day,
+                                                total_hours,
+                                            )
+
+                                            # Move to next day
+                                            current_date = datetime.combine(
+                                                current_date.date() + timedelta(days=1),
+                                                datetime.min.time(),
+                                            )
+                                    else:
+                                        # All consumption happened on the same day
+                                        self._consumption_history_with_dates.append(
+                                            (now, liters_used)
+                                        )
+                                else:
+                                    # No previous timestamp, just add to current day
+                                    self._consumption_history_with_dates.append(
+                                        (now, liters_used)
+                                    )
 
                                 # Calculate daily totals from history grouped by date
                                 daily_totals = (
