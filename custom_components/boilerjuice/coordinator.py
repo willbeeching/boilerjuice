@@ -1080,6 +1080,53 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                         self._previous_total_level = current_total_level
                         self._last_update = now
 
+                # Always recalculate rolling average (even if no new consumption)
+                # This ensures old data (>7 days) is pruned from the average
+                if self._consumption_history_with_dates:
+                    # Prune entries older than 7 days from the raw history
+                    cutoff_date = (
+                        now - timedelta(days=CONSUMPTION_ROLLING_DAYS)
+                    ).date()
+                    self._consumption_history_with_dates = [
+                        (dt, consumption)
+                        for dt, consumption in self._consumption_history_with_dates
+                        if dt.date() >= cutoff_date
+                    ]
+
+                    # Calculate daily totals from history grouped by date
+                    daily_totals = self._calculate_daily_totals_from_history()
+
+                    # Filter daily totals to only recent data
+                    cutoff_date = (
+                        now - timedelta(days=CONSUMPTION_ROLLING_DAYS)
+                    ).date()
+                    recent_daily_totals = {
+                        date_str: total
+                        for date_str, total in daily_totals.items()
+                        if datetime.fromisoformat(date_str).date() >= cutoff_date
+                    }
+
+                    # Update the simplified daily history (for backwards compatibility)
+                    self._daily_consumption_history = list(recent_daily_totals.values())
+
+                    # Calculate average daily consumption from the last 7 days
+                    if self._daily_consumption_history:
+                        self._daily_consumption_usable_liters = sum(
+                            self._daily_consumption_history
+                        ) / len(self._daily_consumption_history)
+                    else:
+                        self._daily_consumption_usable_liters = 0.0
+
+                    _LOGGER.debug(
+                        "Recalculated rolling average: %s L/day (from %s days of data)",
+                        round(self._daily_consumption_usable_liters, 1),
+                        len(self._daily_consumption_history),
+                    )
+
+                    # Also recalculate seasonal statistics
+                    seasonal_stats = self._calculate_seasonal_stats()
+                    data.update({"seasonal_stats": seasonal_stats})
+
                 # Add consumption data to tank data
                 data["total_consumption_usable_liters"] = (
                     self._total_consumption_usable_liters
