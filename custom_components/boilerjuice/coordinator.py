@@ -732,7 +732,26 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                 else:
                     # Track consumption based on direct volume change if available
                     consumption_detected = False
+
+                    # Check for refill first (volume went up)
                     if (
+                        self._previous_usable_volume is not None
+                        and current_usable_volume > self._previous_usable_volume
+                    ):
+                        liters_added = (
+                            current_usable_volume - self._previous_usable_volume
+                        )
+                        _LOGGER.info(
+                            "Detected tank refill: +%s L (from %s L to %s L)",
+                            round(liters_added, 1),
+                            self._previous_usable_volume,
+                            current_usable_volume,
+                        )
+                        # Reset last update time so next consumption starts from now
+                        self._last_update = now
+
+                    # Check for consumption (volume went down)
+                    elif (
                         self._previous_usable_volume is not None
                         and current_usable_volume < self._previous_usable_volume
                     ):
@@ -741,7 +760,7 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                         )
                         _LOGGER.info(
                             "Detected consumption from volume change: %s L (from %s L to %s L)",
-                            liters_used,
+                            round(liters_used, 1),
                             self._previous_usable_volume,
                             current_usable_volume,
                         )
@@ -752,8 +771,49 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                         )
                         consumption_detected = True
 
-                        # Update consumption history with dates
-                        self._consumption_history_with_dates.append((now, liters_used))
+                        # Spread consumption across days if multiple days elapsed
+                        if self._last_update:
+                            # Calculate days elapsed since last update
+                            time_elapsed = (now - self._last_update).total_seconds()
+                            days_elapsed = time_elapsed / (24 * 3600)
+
+                            _LOGGER.debug(
+                                "Spreading %s L consumption across %.2f days",
+                                round(liters_used, 1),
+                                days_elapsed,
+                            )
+
+                            if days_elapsed >= 1.0:
+                                # Consumption spans multiple days - split proportionally
+                                last_date = self._last_update.date()
+                                current_date = now.date()
+
+                                # Calculate how to split consumption across days
+                                current_day_iter = last_date
+                                while current_day_iter <= current_date:
+                                    # For each day, add its proportional share
+                                    daily_share = liters_used / days_elapsed
+                                    self._consumption_history_with_dates.append(
+                                        (
+                                            datetime.combine(
+                                                current_day_iter, datetime.min.time()
+                                            ),
+                                            daily_share,
+                                        )
+                                    )
+                                    current_day_iter = current_day_iter + timedelta(
+                                        days=1
+                                    )
+                            else:
+                                # Same day consumption
+                                self._consumption_history_with_dates.append(
+                                    (now, liters_used)
+                                )
+                        else:
+                            # No previous update - add to current day
+                            self._consumption_history_with_dates.append(
+                                (now, liters_used)
+                            )
 
                         # Calculate daily totals from history grouped by date
                         daily_totals = self._calculate_daily_totals_from_history()
@@ -803,7 +863,25 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                             self._previous_total_level,
                         )
 
-                        if current_total_level < self._previous_total_level:
+                        # Check for refill first (level went up)
+                        if current_total_level > self._previous_total_level:
+                            capacity = data.get("capacity_litres")
+                            if capacity:
+                                percent_change = (
+                                    current_total_level - self._previous_total_level
+                                )
+                                liters_added = (percent_change / 100) * capacity
+                                _LOGGER.info(
+                                    "Detected tank refill from level change: +%s%% (+%s L) - tank capacity: %s L",
+                                    round(percent_change, 1),
+                                    round(liters_added, 1),
+                                    capacity,
+                                )
+                                # Reset last update time so next consumption starts from now
+                                self._last_update = now
+
+                        # Check for consumption (level went down)
+                        elif current_total_level < self._previous_total_level:
                             # Calculate liters based on percentage change
                             capacity = data.get("capacity_litres")
                             if capacity:
@@ -824,10 +902,52 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                                 )
                                 consumption_detected = True
 
-                                # Update consumption history with dates
-                                self._consumption_history_with_dates.append(
-                                    (now, liters_used)
-                                )
+                                # Spread consumption across days if multiple days elapsed
+                                if self._last_update:
+                                    # Calculate days elapsed since last update
+                                    time_elapsed = (
+                                        now - self._last_update
+                                    ).total_seconds()
+                                    days_elapsed = time_elapsed / (24 * 3600)
+
+                                    _LOGGER.debug(
+                                        "Spreading %s L consumption across %.2f days (from percentage)",
+                                        round(liters_used, 1),
+                                        days_elapsed,
+                                    )
+
+                                    if days_elapsed >= 1.0:
+                                        # Consumption spans multiple days - split proportionally
+                                        last_date = self._last_update.date()
+                                        current_date = now.date()
+
+                                        # Calculate how to split consumption across days
+                                        current_day_iter = last_date
+                                        while current_day_iter <= current_date:
+                                            # For each day, add its proportional share
+                                            daily_share = liters_used / days_elapsed
+                                            self._consumption_history_with_dates.append(
+                                                (
+                                                    datetime.combine(
+                                                        current_day_iter,
+                                                        datetime.min.time(),
+                                                    ),
+                                                    daily_share,
+                                                )
+                                            )
+                                            current_day_iter = (
+                                                current_day_iter + timedelta(days=1)
+                                            )
+                                    else:
+                                        # Same day consumption
+                                        self._consumption_history_with_dates.append(
+                                            (now, liters_used)
+                                        )
+                                else:
+                                    # No previous update - add to current day
+                                    self._consumption_history_with_dates.append(
+                                        (now, liters_used)
+                                    )
 
                                 # Calculate daily totals from history grouped by date
                                 daily_totals = (
@@ -886,6 +1006,33 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                     self._daily_consumption_usable_liters
                 )
                 data["days_until_empty"] = self._calculate_days_until_empty(data)
+
+                # Recalculate rolling average on every coordinator run (not just when consumption detected)
+                # This allows old incorrect data to naturally age out after 7 days
+                if self._consumption_history_with_dates:
+                    daily_totals = self._calculate_daily_totals_from_history()
+                    self._daily_consumption_history = list(daily_totals.values())[
+                        -CONSUMPTION_ROLLING_DAYS:
+                    ]
+
+                    # Prune old entries (older than 30 days) to prevent unbounded growth
+                    cutoff_date = now - timedelta(days=30)
+                    self._consumption_history_with_dates = [
+                        (date, liters)
+                        for date, liters in self._consumption_history_with_dates
+                        if date >= cutoff_date
+                    ]
+
+                    if self._daily_consumption_history:
+                        self._daily_consumption_usable_liters = sum(
+                            self._daily_consumption_history
+                        ) / len(self._daily_consumption_history)
+
+                        _LOGGER.debug(
+                            "Recalculated rolling average: %s L/day from %d days of data",
+                            round(self._daily_consumption_usable_liters, 1),
+                            len(self._daily_consumption_history),
+                        )
 
                 _LOGGER.info(
                     "Consumption data: total=%s L, daily=%s L/day, total_kwh=%s",
