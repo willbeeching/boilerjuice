@@ -6,13 +6,13 @@
   "dependencies": [],
   "documentation": "https://github.com/willbeeching/boilerjuice",
   "homekit": {},
+  "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/willbeeching/boilerjuice/issues",
+  "loggers": ["custom_components.boilerjuice"],
+  "quality_scale": "silver",
   "requirements": ["aiohttp>=3.8.0", "beautifulsoup4>=4.12.0"],
   "ssdp": [],
-  "version": "1.1.6",
-  "zeroconf": [],
-  "integration_type": "service",
-  "loggers": ["custom_components.boilerjuice"],
-  "quality_scale": "silver"
+  "version": "1.1.7",
+  "zeroconf": []
 }
