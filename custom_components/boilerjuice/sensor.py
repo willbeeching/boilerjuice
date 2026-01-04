@@ -2,26 +2,43 @@
 
 from __future__ import annotations
 
-import datetime as dt
-import logging
-from datetime import datetime
-from typing import Any, Dict
-from zoneinfo import ZoneInfo
-
-from homeassistant.components.sensor import (SensorDeviceClass, SensorEntity,
-                                             SensorStateClass)
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfVolume
+from homeassistant.const import (
+    PERCENTAGE,
+    UnitOfVolume,
+    UnitOfEnergy,
+)
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.helpers.device_registry import DeviceEntryType
-from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
+from homeassistant.helpers.device_registry import DeviceEntryType
+from typing import Any, Dict
+from datetime import datetime
+import datetime as dt
+from zoneinfo import ZoneInfo
+import logging
 
-from .const import (ATTR_OIL_TYPE, ATTR_TANK_ID, ATTR_TANK_MODEL,
-                    ATTR_TANK_NAME, ATTR_TANK_SHAPE, DEFAULT_KWH_PER_LITRE,
-                    DOMAIN, SENSOR_CAPACITY, SENSOR_HEIGHT, SENSOR_VOLUME,
-                    UNIT_CM, UNIT_LITRES, UNIT_PERCENTAGE)
+from .const import (
+    DOMAIN,
+    SENSOR_VOLUME,
+    SENSOR_CAPACITY,
+    SENSOR_HEIGHT,
+    UNIT_PERCENTAGE,
+    UNIT_LITRES,
+    UNIT_CM,
+    ATTR_TANK_NAME,
+    ATTR_TANK_SHAPE,
+    ATTR_OIL_TYPE,
+    ATTR_TANK_MODEL,
+    ATTR_TANK_ID,
+    DEFAULT_KWH_PER_LITRE,
+)
 from .coordinator import BoilerJuiceDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)

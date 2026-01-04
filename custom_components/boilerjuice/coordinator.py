@@ -2,26 +2,33 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 import re
+import os
+import json
+from datetime import datetime, timedelta
+from typing import Union, Dict, Any, List, Tuple
 import statistics
 from calendar import month_name
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Tuple, Union
 
 from bs4 import BeautifulSoup
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
-from homeassistant.helpers.update_coordinator import (DataUpdateCoordinator,
-                                                      UpdateFailed)
 
-from .const import (ACCOUNT_URL, CONF_EMAIL, CONF_KWH_PER_LITRE, CONF_PASSWORD,
-                    CONF_TANK_ID, DEFAULT_KWH_PER_LITRE, DOMAIN, LOGIN_URL,
-                    TANKS_URL)
+from .const import (
+    CONF_EMAIL,
+    CONF_PASSWORD,
+    CONF_TANK_ID,
+    CONF_KWH_PER_LITRE,
+    DEFAULT_KWH_PER_LITRE,
+    DOMAIN,
+    LOGIN_URL,
+    TANKS_URL,
+    ACCOUNT_URL,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
