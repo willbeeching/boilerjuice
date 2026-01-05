@@ -86,8 +86,8 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._tank_id = self._get_config_value_optional(CONF_TANK_ID)
 
-        # Load consumption data from storage
-        hass.async_create_task(self._load_consumption_data())
+        # Flag to track if data has been loaded
+        self._consumption_data_loaded = False
 
     def _get_config_value(self, key: str) -> Any:
         """Get a configuration value, handling both ConfigEntry and dict inputs."""
@@ -146,6 +146,9 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _load_consumption_data(self) -> None:
         """Load consumption data from storage."""
+        if self._consumption_data_loaded:
+            return
+
         stored_data = await self._store.async_load()
 
         if stored_data:
@@ -236,6 +239,10 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                     self._total_consumption_usable_liters,
                     self._daily_consumption_usable_liters,
                 )
+
+        # Mark data as loaded
+        self._consumption_data_loaded = True
+        _LOGGER.debug("Consumption data loading completed")
 
     def _get_season(self, date: datetime) -> str:
         """Get the season for a given date."""
@@ -467,6 +474,11 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self):
         """Fetch data from BoilerJuice."""
+        # Ensure consumption data is loaded before first update
+        if not self._consumption_data_loaded:
+            _LOGGER.debug("Loading consumption data before first update")
+            await self._load_consumption_data()
+
         if self._session is None:
             self._session = async_get_clientsession(self.hass)
 

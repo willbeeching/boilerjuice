@@ -19,6 +19,7 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers.device_registry import DeviceEntryType
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.typing import StateType
 
 from .const import (
@@ -217,7 +218,7 @@ class BoilerJuiceTotalConsumptionKwhSensor(BoilerJuiceSensor):
         return round(value, 1) if value is not None else None
 
 
-class BoilerJuiceIncrementalConsumptionKwhSensor(BoilerJuiceSensor):
+class BoilerJuiceIncrementalConsumptionKwhSensor(BoilerJuiceSensor, RestoreEntity):
     """Representation of a BoilerJuice incremental consumption in kWh sensor."""
 
     _attr_name = "Oil Consumption (kWh)"
@@ -236,6 +237,43 @@ class BoilerJuiceIncrementalConsumptionKwhSensor(BoilerJuiceSensor):
         self._last_check_time = None
         self._daily_consumption = 0.0
         self._last_reset = None
+        self._restored = False
+
+    async def async_added_to_hass(self) -> None:
+        """When entity is added to hass, restore state if available."""
+        await super().async_added_to_hass()
+
+        if not self._restored:
+            last_state = await self.async_get_last_state()
+            if last_state is not None and last_state.state not in (
+                "unknown",
+                "unavailable",
+            ):
+                try:
+                    self._daily_consumption = float(last_state.state)
+
+                    # Restore additional attributes if available
+                    if last_state.attributes:
+                        if "last_reset" in last_state.attributes:
+                            self._last_reset = datetime.fromisoformat(
+                                last_state.attributes["last_reset"]
+                            )
+                        if "last_check_time" in last_state.attributes:
+                            self._last_check_time = datetime.fromisoformat(
+                                last_state.attributes["last_check_time"]
+                            )
+
+                    _LOGGER.info(
+                        "Restored Oil Consumption (kWh) sensor state: %s kWh, last_reset: %s",
+                        self._daily_consumption,
+                        self._last_reset,
+                    )
+                except (ValueError, TypeError) as err:
+                    _LOGGER.warning(
+                        "Could not restore Oil Consumption (kWh) sensor state: %s", err
+                    )
+
+            self._restored = True
 
     @property
     def native_value(self) -> float | None:
@@ -272,6 +310,16 @@ class BoilerJuiceIncrementalConsumptionKwhSensor(BoilerJuiceSensor):
 
         self._last_check_time = now
         return round(self._daily_consumption, 1)
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return the state attributes for restoration."""
+        attrs = {}
+        if self._last_reset:
+            attrs["last_reset"] = self._last_reset.isoformat()
+        if self._last_check_time:
+            attrs["last_check_time"] = self._last_check_time.isoformat()
+        return attrs
 
 
 class BoilerJuiceDaysUntilEmptySensor(BoilerJuiceSensor):
