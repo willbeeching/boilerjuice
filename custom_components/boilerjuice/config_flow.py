@@ -35,7 +35,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     coordinator = BoilerJuiceDataUpdateCoordinator(hass, data)
 
     try:
-        await coordinator.async_config_entry_first_refresh()
+        await coordinator.async_refresh()
     except Exception as err:
         if "Invalid credentials" in str(err):
             raise InvalidAuth from err
