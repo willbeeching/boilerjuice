@@ -11,10 +11,11 @@ from calendar import month_name
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Tuple, Union
 
+import aiohttp
 from bs4 import BeautifulSoup
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -67,7 +68,10 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             update_interval=SCAN_INTERVAL,
         )
         self._config = config
-        self._session = None
+        # Each coordinator owns its own aiohttp session with a dedicated cookie
+        # jar. Using the shared HA session caused two BoilerJuice accounts to
+        # overwrite each other's login cookies (see GitHub issue #3).
+        self._session: aiohttp.ClientSession | None = None
         self._previous_usable_volume = None
         self._previous_total_level = None
         self._total_consumption_usable_liters = 0.0
@@ -82,7 +86,11 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         # Add seasonal tracking
         self._consumption_history_with_dates: List[Tuple[datetime, float]] = []
 
-        # Set up storage
+        # Set up storage. Keyed per config entry so multiple accounts don't
+        # collide on the legacy "default" bucket when no tank id is provided.
+        self._entry_id: str | None = (
+            config.entry_id if isinstance(config, ConfigEntry) else None
+        )
         self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._tank_id = self._get_config_value_optional(CONF_TANK_ID)
 
@@ -144,103 +152,84 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
 
         return None
 
+    def _apply_stored_data(self, source: str, data: dict) -> None:
+        """Hydrate coordinator state from a stored-data blob."""
+        self._total_consumption_usable_liters = data.get(
+            "total_consumption_liters", 0.0
+        )
+        self._total_consumption_usable_kwh = data.get("total_consumption_kwh", 0.0)
+        self._daily_consumption_usable_liters = data.get(
+            "daily_consumption_liters", 0.0
+        )
+        self._daily_consumption_history = data.get("consumption_history", [])
+
+        history_with_dates = data.get("consumption_history_with_dates", [])
+        self._consumption_history_with_dates = [
+            (datetime.fromisoformat(dt), cons) for dt, cons in history_with_dates
+        ]
+
+        last_update_str = data.get("last_update")
+        if last_update_str:
+            try:
+                self._last_update = datetime.fromisoformat(last_update_str)
+            except (ValueError, TypeError):
+                self._last_update = None
+
+        self._previous_usable_volume = data.get("reference_volume")
+        self._previous_total_level = data.get("reference_level")
+
+        _LOGGER.info(
+            "Loaded stored consumption data from %s: total=%s L, daily=%s L/day",
+            source,
+            self._total_consumption_usable_liters,
+            self._daily_consumption_usable_liters,
+        )
+
     async def _load_consumption_data(self) -> None:
-        """Load consumption data from storage."""
+        """Load consumption data from storage.
+
+        Data is keyed by config entry id so that multiple BoilerJuice accounts
+        never share state. For backwards compatibility we fall back to the
+        legacy tank-id key (and, only when a tank id is configured, the
+        "default" key) so existing users don't lose consumption history on
+        upgrade.
+        """
         if self._consumption_data_loaded:
             return
 
-        stored_data = await self._store.async_load()
+        stored_data = await self._store.async_load() or {}
 
         if stored_data:
             _LOGGER.debug("Loading stored consumption data: %s", stored_data)
 
-            # If we have a tank ID, try to get data specific to this tank
-            if self._tank_id and self._tank_id in stored_data:
-                tank_data = stored_data[self._tank_id]
+        loaded = False
 
-                self._total_consumption_usable_liters = tank_data.get(
-                    "total_consumption_liters", 0.0
-                )
-                self._total_consumption_usable_kwh = tank_data.get(
-                    "total_consumption_kwh", 0.0
-                )
-                self._daily_consumption_usable_liters = tank_data.get(
-                    "daily_consumption_liters", 0.0
-                )
-                self._daily_consumption_history = tank_data.get(
-                    "consumption_history", []
-                )
+        if self._entry_id and self._entry_id in stored_data:
+            self._apply_stored_data(
+                f"entry {self._entry_id}", stored_data[self._entry_id]
+            )
+            loaded = True
+        elif self._tank_id and self._tank_id in stored_data:
+            # Legacy per-tank key – migrate into the entry-keyed slot.
+            self._apply_stored_data(
+                f"legacy tank {self._tank_id}", stored_data[self._tank_id]
+            )
+            loaded = True
+        elif self._tank_id and stored_data.get("default"):
+            # Only migrate the legacy "default" bucket when we can be sure it
+            # belongs to this entry (i.e. a tank id is explicitly configured).
+            # With multiple untagged accounts the default bucket is ambiguous,
+            # so we leave it untouched rather than risk cross-contamination.
+            self._apply_stored_data("legacy default", stored_data["default"])
+            loaded = True
 
-                # Load consumption history with dates
-                history_with_dates = tank_data.get("consumption_history_with_dates", [])
-                self._consumption_history_with_dates = [
-                    (datetime.fromisoformat(dt), cons)
-                    for dt, cons in history_with_dates
-                ]
+        if not loaded and stored_data:
+            _LOGGER.debug(
+                "No stored consumption data for entry %s / tank %s; starting fresh",
+                self._entry_id,
+                self._tank_id,
+            )
 
-                # Convert stored string timestamp to datetime if exists
-                last_update_str = tank_data.get("last_update")
-                if last_update_str:
-                    try:
-                        self._last_update = datetime.fromisoformat(last_update_str)
-                    except (ValueError, TypeError):
-                        self._last_update = None
-
-                # Get reference values if available
-                self._previous_usable_volume = tank_data.get("reference_volume")
-                self._previous_total_level = tank_data.get("reference_level")
-
-                _LOGGER.info(
-                    "Loaded stored consumption data for tank %s: total=%s L, daily=%s L/day",
-                    self._tank_id,
-                    self._total_consumption_usable_liters,
-                    self._daily_consumption_usable_liters,
-                )
-            elif not self._tank_id and stored_data.get("default"):
-                # Fallback to default if no tank ID
-                default_data = stored_data["default"]
-
-                self._total_consumption_usable_liters = default_data.get(
-                    "total_consumption_liters", 0.0
-                )
-                self._total_consumption_usable_kwh = default_data.get(
-                    "total_consumption_kwh", 0.0
-                )
-                self._daily_consumption_usable_liters = default_data.get(
-                    "daily_consumption_liters", 0.0
-                )
-                self._daily_consumption_history = default_data.get(
-                    "consumption_history", []
-                )
-
-                # Load consumption history with dates
-                history_with_dates = default_data.get(
-                    "consumption_history_with_dates", []
-                )
-                self._consumption_history_with_dates = [
-                    (datetime.fromisoformat(dt), cons)
-                    for dt, cons in history_with_dates
-                ]
-
-                # Convert stored string timestamp to datetime if exists
-                last_update_str = default_data.get("last_update")
-                if last_update_str:
-                    try:
-                        self._last_update = datetime.fromisoformat(last_update_str)
-                    except (ValueError, TypeError):
-                        self._last_update = None
-
-                # Get reference values if available
-                self._previous_usable_volume = default_data.get("reference_volume")
-                self._previous_total_level = default_data.get("reference_level")
-
-                _LOGGER.info(
-                    "Loaded default stored consumption data: total=%s L, daily=%s L/day",
-                    self._total_consumption_usable_liters,
-                    self._daily_consumption_usable_liters,
-                )
-
-        # Mark data as loaded
         self._consumption_data_loaded = True
         _LOGGER.debug("Consumption data loading completed")
 
@@ -335,16 +324,22 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         return seasonal_data
 
     async def _save_consumption_data(self) -> None:
-        """Save consumption data to storage."""
-        tank_id = self.data.get("id") if self.data else self._tank_id
+        """Save consumption data to storage.
 
-        if not tank_id:
-            tank_id = "default"
+        Saved under this entry's id so multiple accounts never collide. As a
+        transitional step we also drop any legacy key that refers to the same
+        tank, keeping storage tidy after migration.
+        """
+        # Prefer the config entry id (stable, unique per instance). Fall back
+        # to the scraped tank id, then the configured tank id, then "default"
+        # for coordinators created outside a config entry (the config flow's
+        # validation path does not persist state anyway).
+        storage_key = self._entry_id
+        if not storage_key:
+            storage_key = (self.data or {}).get("id") or self._tank_id or "default"
 
-        # Load existing data first
         stored_data = await self._store.async_load() or {}
 
-        # Update with current values
         tank_data = {
             "total_consumption_liters": self._total_consumption_usable_liters,
             "total_consumption_kwh": self._total_consumption_usable_kwh,
@@ -352,22 +347,35 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             "reference_volume": self._previous_usable_volume,
             "reference_level": self._previous_total_level,
             "consumption_history": self._daily_consumption_history,
-            # Store consumption history with dates as list of [timestamp, consumption] pairs
             "consumption_history_with_dates": [
                 [dt.isoformat(), cons]
                 for dt, cons in self._consumption_history_with_dates
             ],
         }
 
-        # Store last update time as ISO format string
         if self._last_update:
             tank_data["last_update"] = self._last_update.isoformat()
 
-        stored_data[tank_id] = tank_data
+        stored_data[storage_key] = tank_data
 
-        # Save to storage
+        # Clean up legacy tank-id keyed entries that are now owned by this
+        # config entry. The shared "default" bucket is left alone because we
+        # can't safely tell whether it still belongs to another entry that
+        # hasn't yet migrated.
+        if self._entry_id:
+            scraped_tank_id = (self.data or {}).get("id")
+            for legacy_key in {self._tank_id, scraped_tank_id}:
+                if legacy_key and legacy_key != self._entry_id:
+                    stored_data.pop(legacy_key, None)
+
         await self._store.async_save(stored_data)
-        _LOGGER.debug("Saved consumption data for tank %s: %s", tank_id, tank_data)
+        _LOGGER.debug("Saved consumption data under %s: %s", storage_key, tank_data)
+
+    async def async_close(self) -> None:
+        """Close the private aiohttp session (call on unload)."""
+        if self._session is not None:
+            await self._session.close()
+            self._session = None
 
     def reset_consumption(self) -> None:
         """Reset the consumption counter."""
@@ -480,7 +488,11 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             await self._load_consumption_data()
 
         if self._session is None:
-            self._session = async_get_clientsession(self.hass)
+            # Dedicated cookie jar so concurrent BoilerJuice accounts never
+            # share login state with each other or with other HA integrations.
+            self._session = async_create_clientsession(
+                self.hass, cookie_jar=aiohttp.CookieJar()
+            )
 
         try:
             # First, get the login page to get the CSRF token

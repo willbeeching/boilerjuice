@@ -15,7 +15,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfVolume
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -49,18 +49,6 @@ async def async_setup_entry(
 ) -> None:
     """Set up BoilerJuice sensors from a config entry."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
-
-    # Add the consumption reset service
-    async def handle_reset_consumption(call: ServiceCall) -> None:
-        """Handle the service call to reset consumption."""
-        coordinator.reset_consumption()
-        await coordinator.async_request_refresh()
-
-    hass.services.async_register(
-        DOMAIN,
-        "reset_consumption",
-        handle_reset_consumption,
-    )
 
     async_add_entities(
         [

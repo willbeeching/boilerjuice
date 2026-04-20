@@ -1,10 +1,28 @@
 reset_consumption:
   name: Reset Consumption
-  description: Reset the consumption counters to zero.
+  description: >-
+    Reset the consumption counters to zero. If no target is provided the
+    service is applied to every configured BoilerJuice account.
+  target:
+    device:
+      integration: boilerjuice
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: Optional config entry ID to target a specific account.
+      required: false
+      example: 01HZ...abcd
+      selector:
+        text:
 
 set_consumption:
   name: Set Consumption
-  description: Manually set the consumption values for the oil tank.
+  description: >-
+    Manually set the consumption values for the oil tank. If no target is
+    provided the service is applied to every configured BoilerJuice account.
+  target:
+    device:
+      integration: boilerjuice
   fields:
     liters:
       name: Total Consumption
@@ -28,4 +46,10 @@ set_consumption:
           step: 0.1
           unit_of_measurement: "L/day"
           mode: box
-
+    entry_id:
+      name: Config entry ID
+      description: Optional config entry ID to target a specific account.
+      required: false
+      example: 01HZ...abcd
+      selector:
+        text:

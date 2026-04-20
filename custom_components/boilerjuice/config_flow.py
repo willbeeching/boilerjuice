@@ -35,23 +35,28 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     coordinator = BoilerJuiceDataUpdateCoordinator(hass, data)
 
     try:
-        await coordinator.async_refresh()
-    except Exception as err:
-        if "Invalid credentials" in str(err):
-            raise InvalidAuth from err
-        if "Failed to login" in str(err):
-            raise CannotConnect from err
-        raise err
+        try:
+            await coordinator.async_refresh()
+        except Exception as err:
+            if "Invalid credentials" in str(err):
+                raise InvalidAuth from err
+            if "Failed to login" in str(err):
+                raise CannotConnect from err
+            raise err
 
-    # Get the model name if available, fallback to tank name, then default
-    title = "BoilerJuice Tank"
-    if coordinator.data:
-        if coordinator.data.get("model"):
-            title = coordinator.data["model"]
-        elif coordinator.data.get("name"):
-            title = coordinator.data["name"]
+        # Get the model name if available, fallback to tank name, then default
+        title = "BoilerJuice Tank"
+        if coordinator.data:
+            if coordinator.data.get("model"):
+                title = coordinator.data["model"]
+            elif coordinator.data.get("name"):
+                title = coordinator.data["name"]
 
-    return {"title": title}
+        return {"title": title}
+    finally:
+        # Each coordinator owns a private aiohttp session; always close the
+        # throwaway one used for config-flow validation.
+        await coordinator.async_close()
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
