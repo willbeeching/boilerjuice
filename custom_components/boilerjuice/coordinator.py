@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import statistics
-from calendar import month_name
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Tuple, Union
 
@@ -18,6 +16,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .const import (
     ACCOUNT_URL,
@@ -44,6 +43,10 @@ LITERS_TO_KWH = 10.35
 CONSUMPTION_ROLLING_DAYS = 7
 
 # Seasonal tracking constants
+# Dated history is kept for just over a year so every season has data to
+# average. Entries are collapsed to one per day, so this bounds the stored
+# history at ~400 rows.
+SEASONAL_HISTORY_DAYS = 400
 WINTER_MONTHS = [12, 1, 2]
 SPRING_MONTHS = [3, 4, 5]
 SUMMER_MONTHS = [6, 7, 8]
@@ -52,6 +55,14 @@ AUTUMN_MONTHS = [9, 10, 11]
 # Storage constants
 STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}_consumption_data"
+
+
+class BoilerJuiceAuthError(UpdateFailed):
+    """BoilerJuice rejected the configured credentials."""
+
+
+class BoilerJuiceConnectionError(UpdateFailed):
+    """BoilerJuice could not be reached or the login flow could not be driven."""
 
 
 class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
@@ -124,33 +135,25 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         """Return the average daily oil consumption in liters."""
         return self._daily_consumption_usable_liters
 
-    @property
-    def days_until_empty(self) -> float | None:
-        """Return the estimated days until the tank is empty."""
-        if not self.data:
-            return None
+    @staticmethod
+    def _as_local(value: datetime) -> datetime:
+        """Return `value` as a timezone-aware local datetime.
 
-        current_volume = self.data.get("current_volume_litres")
-        if current_volume is None:
-            return None
+        Timestamps written before this integration became timezone-aware were
+        naive local wall-clock (plain `datetime.now()`), so they are localized
+        rather than reinterpreted as UTC. Without this, stored history would
+        mix naive and aware values and every comparison would raise TypeError.
+        """
+        if value.tzinfo is None:
+            return value.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+        return dt_util.as_local(value)
 
-        # If we have actual consumption data, use it
-        if (
-            self._daily_consumption_usable_liters
-            and self._daily_consumption_usable_liters > 0
-        ):
-            return current_volume / self._daily_consumption_usable_liters
-
-        # Otherwise, estimate based on current level and capacity
-        capacity = self.data.get("capacity_litres")
-        level = self.data.get("level_percentage")
-
-        if capacity and level is not None and level > 0:
-            # Assume average daily consumption of 2% of tank capacity
-            estimated_daily_consumption = capacity * 0.02
-            return current_volume / estimated_daily_consumption
-
-        return None
+    @staticmethod
+    def _local_midnight(date_str: str) -> datetime:
+        """Return local midnight for an ISO date key from the daily totals."""
+        return datetime.fromisoformat(date_str).replace(
+            tzinfo=dt_util.DEFAULT_TIME_ZONE
+        )
 
     def _apply_stored_data(self, source: str, data: dict) -> None:
         """Hydrate coordinator state from a stored-data blob."""
@@ -165,13 +168,16 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
 
         history_with_dates = data.get("consumption_history_with_dates", [])
         self._consumption_history_with_dates = [
-            (datetime.fromisoformat(dt), cons) for dt, cons in history_with_dates
+            (self._as_local(datetime.fromisoformat(dt)), cons)
+            for dt, cons in history_with_dates
         ]
 
         last_update_str = data.get("last_update")
         if last_update_str:
             try:
-                self._last_update = datetime.fromisoformat(last_update_str)
+                self._last_update = self._as_local(
+                    datetime.fromisoformat(last_update_str)
+                )
             except (ValueError, TypeError):
                 self._last_update = None
 
@@ -284,7 +290,7 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
 
         # Group consumption by season and month using daily totals
         for date_str, daily_consumption in daily_totals.items():
-            date = datetime.fromisoformat(date_str)
+            date = self._local_midnight(date_str)
             season = self._get_season(date)
             seasonal_data[season].append(daily_consumption)
 
@@ -312,7 +318,7 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                 )
 
         # Get current season stats
-        current_season = self._get_season(datetime.now())
+        current_season = self._get_season(dt_util.now())
         if seasonal_data[current_season]:
             seasonal_data["current_season"] = {
                 "name": current_season,
@@ -322,6 +328,83 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             }
 
         return seasonal_data
+
+    def _spread_consumption_over_days(self, liters_used: float, now: datetime) -> None:
+        """Apportion `liters_used` across the days it was actually burnt over.
+
+        Consumption is only ever observed as a drop between two polls, so oil
+        burnt while Home Assistant was down (or between sparse tank readings)
+        belongs to the days it spanned rather than to the day we noticed it.
+        """
+        if not self._last_update:
+            # No baseline to spread from - attribute it all to now.
+            self._consumption_history_with_dates.append((now, liters_used))
+            return
+
+        interval_seconds = (now - self._last_update).total_seconds()
+        if interval_seconds < 24 * 3600:
+            # Same-day (or clock went backwards) - no spreading needed.
+            self._consumption_history_with_dates.append((now, liters_used))
+            return
+
+        # Weight each calendar day by how much of the interval fell inside it,
+        # so the shares sum back to exactly liters_used. The previous approach
+        # divided by the fractional elapsed days while iterating whole dates
+        # inclusive, which over-attributed: a 1.2-day gap spanning two dates
+        # credited 2 x (liters / 1.2), i.e. 1.67x the oil actually burnt.
+        day = self._last_update.date()
+        last_day = now.date()
+        while day <= last_day:
+            day_start = datetime.combine(
+                day, datetime.min.time(), tzinfo=self._last_update.tzinfo
+            )
+            day_end = day_start + timedelta(days=1)
+            overlap = (
+                min(now, day_end) - max(self._last_update, day_start)
+            ).total_seconds()
+            if overlap > 0:
+                self._consumption_history_with_dates.append(
+                    (day_start, liters_used * overlap / interval_seconds)
+                )
+            day += timedelta(days=1)
+
+    def _record_consumption(self, liters_used: float, now: datetime) -> None:
+        """Record observed consumption and refresh the derived averages.
+
+        Shared by the volume-derived and percentage-derived detection paths so
+        the two can't drift apart.
+        """
+        self._total_consumption_usable_liters += liters_used
+        self._total_consumption_usable_kwh += liters_used * LITERS_TO_KWH
+
+        self._spread_consumption_over_days(liters_used, now)
+
+        # Recompute the rolling average from the regrouped daily totals.
+        daily_totals = self._calculate_daily_totals_from_history()
+        self._daily_consumption_history = list(daily_totals.values())[
+            -CONSUMPTION_ROLLING_DAYS:
+        ]
+        if self._daily_consumption_history:
+            self._daily_consumption_usable_liters = sum(
+                self._daily_consumption_history
+            ) / len(self._daily_consumption_history)
+        else:
+            self._daily_consumption_usable_liters = 0.0
+
+        current_season = self._calculate_seasonal_stats().get("current_season", {})
+        _LOGGER.info(
+            "Updated daily consumption to %s L/day (rolling %d-day average). "
+            "Current %s average: %s L/day (min: %s, max: %s)",
+            round(self._daily_consumption_usable_liters, 1),
+            len(self._daily_consumption_history),
+            current_season.get("name", "season"),
+            current_season.get("avg", 0),
+            current_season.get("min", 0),
+            current_season.get("max", 0),
+        )
+
+        # Consumption was detected, so the next interval starts from here.
+        self._last_update = now
 
     async def _save_consumption_data(self) -> None:
         """Save consumption data to storage.
@@ -398,7 +481,7 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
 
         self._previous_usable_volume = current_usable_volume
         self._previous_total_level = current_total_level
-        self._last_update = datetime.now()
+        self._last_update = dt_util.now()
 
         _LOGGER.info(
             "Force-set reference values: usable_volume=%s L, total_level=%s%%",
@@ -448,7 +531,7 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
 
         # Otherwise, estimate based on current level and capacity
         capacity = data.get("capacity_litres")
-        level = data.get("level_percentage")
+        level = data.get("total_level_percentage")
 
         if capacity and level is not None and level > 0:
             # Assume average daily consumption of 2% of tank capacity
@@ -456,29 +539,6 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             return round(current_volume / estimated_daily_consumption, 1)
 
         return None
-
-    async def _get_oil_price(self) -> float:
-        """Get the current oil price from the kerosene prices page."""
-        try:
-            response = await self._session.get(
-                "https://www.boilerjuice.com/kerosene-prices/"
-            )
-            response.raise_for_status()
-            content = await response.text()
-
-            # Look for the price in the format "XX.XX pence per litre"
-            import re
-
-            price_match = re.search(r"(\d+\.\d+)\s*pence per litre", content)
-            if price_match:
-                return float(price_match.group(1))
-
-            _LOGGER.warning("Could not find current oil price on kerosene prices page")
-            return None
-
-        except Exception as e:
-            _LOGGER.error(f"Error getting oil price: {e}")
-            return None
 
     async def _async_update_data(self):
         """Fetch data from BoilerJuice."""
@@ -502,14 +562,14 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                     _LOGGER.error(
                         "Failed to get login page with status %s", response.status
                     )
-                    raise Exception("Failed to get login page")
+                    raise BoilerJuiceConnectionError("Failed to get login page")
 
                 text = await response.text()
                 soup = BeautifulSoup(text, "html.parser")
                 csrf_token = soup.find("meta", {"name": "csrf-token"})
                 if not csrf_token:
                     _LOGGER.error("Could not find CSRF token")
-                    raise Exception("Failed to get CSRF token")
+                    raise BoilerJuiceConnectionError("Failed to get CSRF token")
 
                 csrf_token = csrf_token["content"]
 
@@ -525,20 +585,20 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             async with self._session.post(LOGIN_URL, data=login_data) as response:
                 if response.status != 200:
                     _LOGGER.error("Login failed with status %s", response.status)
-                    raise Exception("Failed to login to BoilerJuice")
+                    raise BoilerJuiceConnectionError("Failed to login to BoilerJuice")
 
                 # Check if we're still on the login page (indicating failed login)
                 text = await response.text()
                 if "Sign in" in text:
                     _LOGGER.error("Login failed - still on login page")
-                    raise Exception("Invalid credentials")
+                    raise BoilerJuiceAuthError("Invalid credentials")
 
             # Get or find tank ID
             tank_id = self._get_config_value_optional(CONF_TANK_ID)
             if not tank_id:
                 tank_id = await self._get_tank_id()
                 if not tank_id:
-                    raise Exception("Could not find tank ID")
+                    raise UpdateFailed("Could not find tank ID")
 
             # Get the tank details page
             tank_url = f"{TANKS_URL}/{tank_id}/edit"
@@ -548,7 +608,7 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                     _LOGGER.error(
                         "Failed to get tank page with status %s", response.status
                     )
-                    raise Exception("Failed to get tank data from BoilerJuice")
+                    raise UpdateFailed("Failed to get tank data from BoilerJuice")
 
                 text = await response.text()
                 soup = BeautifulSoup(text, "html.parser")
@@ -715,12 +775,12 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                 data["id"] = tank_id
 
                 if not data:
-                    raise Exception("Could not find any tank details")
+                    raise UpdateFailed("Could not find any tank details")
 
                 # Calculate consumption based on usable oil
                 current_usable_volume = float(data.get("usable_volume_litres", 0))
                 current_total_level = float(data.get("total_level_percentage", 0))
-                now = datetime.now()
+                now = dt_util.now()
 
                 # Log current state
                 _LOGGER.debug(
@@ -789,92 +849,8 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                             current_usable_volume,
                         )
 
-                        self._total_consumption_usable_liters += liters_used
-                        self._total_consumption_usable_kwh += (
-                            liters_used * LITERS_TO_KWH
-                        )
                         consumption_detected = True
-
-                        # Spread consumption across days if multiple days elapsed
-                        if self._last_update:
-                            # Calculate days elapsed since last update
-                            time_elapsed = (now - self._last_update).total_seconds()
-                            days_elapsed = time_elapsed / (24 * 3600)
-
-                            _LOGGER.debug(
-                                "Spreading %s L consumption across %.2f days",
-                                round(liters_used, 1),
-                                days_elapsed,
-                            )
-
-                            if days_elapsed >= 1.0:
-                                # Consumption spans multiple days - split proportionally
-                                last_date = self._last_update.date()
-                                current_date = now.date()
-
-                                # Calculate how to split consumption across days
-                                current_day_iter = last_date
-                                while current_day_iter <= current_date:
-                                    # For each day, add its proportional share
-                                    daily_share = liters_used / days_elapsed
-                                    self._consumption_history_with_dates.append(
-                                        (
-                                            datetime.combine(
-                                                current_day_iter, datetime.min.time()
-                                            ),
-                                            daily_share,
-                                        )
-                                    )
-                                    current_day_iter = current_day_iter + timedelta(
-                                        days=1
-                                    )
-                            else:
-                                # Same day consumption
-                                self._consumption_history_with_dates.append(
-                                    (now, liters_used)
-                                )
-                        else:
-                            # No previous update - add to current day
-                            self._consumption_history_with_dates.append(
-                                (now, liters_used)
-                            )
-
-                        # Calculate daily totals from history grouped by date
-                        daily_totals = self._calculate_daily_totals_from_history()
-
-                        # Update the simplified daily history (for backwards compatibility)
-                        self._daily_consumption_history = list(daily_totals.values())[
-                            -CONSUMPTION_ROLLING_DAYS:
-                        ]
-
-                        # Calculate average daily consumption
-                        if self._daily_consumption_history:
-                            self._daily_consumption_usable_liters = sum(
-                                self._daily_consumption_history
-                            ) / len(self._daily_consumption_history)
-                        else:
-                            self._daily_consumption_usable_liters = 0.0
-
-                        # Calculate seasonal statistics
-                        seasonal_stats = self._calculate_seasonal_stats()
-                        current_season = seasonal_stats.get("current_season", {})
-
-                        _LOGGER.info(
-                            "Updated daily consumption to %s L/day (rolling %d-day average). "
-                            "Current %s average: %s L/day (min: %s, max: %s)",
-                            round(self._daily_consumption_usable_liters, 1),
-                            len(self._daily_consumption_history),
-                            current_season.get("name", "season"),
-                            current_season.get("avg", 0),
-                            current_season.get("min", 0),
-                            current_season.get("max", 0),
-                        )
-
-                        # Add seasonal stats to data
-                        data.update({"seasonal_stats": seasonal_stats})
-
-                        # Update the last update timestamp since consumption was detected
-                        self._last_update = now
+                        self._record_consumption(liters_used, now)
 
                     # If no consumption detected from volume, check percentage change
                     if (
@@ -920,99 +896,8 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                                     capacity,
                                 )
 
-                                self._total_consumption_usable_liters += liters_used
-                                self._total_consumption_usable_kwh += (
-                                    liters_used * LITERS_TO_KWH
-                                )
                                 consumption_detected = True
-
-                                # Spread consumption across days if multiple days elapsed
-                                if self._last_update:
-                                    # Calculate days elapsed since last update
-                                    time_elapsed = (
-                                        now - self._last_update
-                                    ).total_seconds()
-                                    days_elapsed = time_elapsed / (24 * 3600)
-
-                                    _LOGGER.debug(
-                                        "Spreading %s L consumption across %.2f days (from percentage)",
-                                        round(liters_used, 1),
-                                        days_elapsed,
-                                    )
-
-                                    if days_elapsed >= 1.0:
-                                        # Consumption spans multiple days - split proportionally
-                                        last_date = self._last_update.date()
-                                        current_date = now.date()
-
-                                        # Calculate how to split consumption across days
-                                        current_day_iter = last_date
-                                        while current_day_iter <= current_date:
-                                            # For each day, add its proportional share
-                                            daily_share = liters_used / days_elapsed
-                                            self._consumption_history_with_dates.append(
-                                                (
-                                                    datetime.combine(
-                                                        current_day_iter,
-                                                        datetime.min.time(),
-                                                    ),
-                                                    daily_share,
-                                                )
-                                            )
-                                            current_day_iter = (
-                                                current_day_iter + timedelta(days=1)
-                                            )
-                                    else:
-                                        # Same day consumption
-                                        self._consumption_history_with_dates.append(
-                                            (now, liters_used)
-                                        )
-                                else:
-                                    # No previous update - add to current day
-                                    self._consumption_history_with_dates.append(
-                                        (now, liters_used)
-                                    )
-
-                                # Calculate daily totals from history grouped by date
-                                daily_totals = (
-                                    self._calculate_daily_totals_from_history()
-                                )
-
-                                # Update the simplified daily history (for backwards compatibility)
-                                self._daily_consumption_history = list(
-                                    daily_totals.values()
-                                )[-CONSUMPTION_ROLLING_DAYS:]
-
-                                # Calculate average daily consumption
-                                if self._daily_consumption_history:
-                                    self._daily_consumption_usable_liters = sum(
-                                        self._daily_consumption_history
-                                    ) / len(self._daily_consumption_history)
-                                else:
-                                    self._daily_consumption_usable_liters = 0.0
-
-                                # Calculate seasonal statistics
-                                seasonal_stats = self._calculate_seasonal_stats()
-                                current_season = seasonal_stats.get(
-                                    "current_season", {}
-                                )
-
-                                _LOGGER.info(
-                                    "Updated daily consumption to %s L/day (rolling %d-day average). "
-                                    "Current %s average: %s L/day (min: %s, max: %s)",
-                                    round(self._daily_consumption_usable_liters, 1),
-                                    len(self._daily_consumption_history),
-                                    current_season.get("name", "season"),
-                                    current_season.get("avg", 0),
-                                    current_season.get("min", 0),
-                                    current_season.get("max", 0),
-                                )
-
-                                # Add seasonal stats to data
-                                data.update({"seasonal_stats": seasonal_stats})
-
-                                # Update the last update timestamp since consumption was detected
-                                self._last_update = now
+                                self._record_consumption(liters_used, now)
 
                     # Update previous values regardless of consumption
                     self._previous_usable_volume = current_usable_volume
@@ -1039,12 +924,19 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                         -CONSUMPTION_ROLLING_DAYS:
                     ]
 
-                    # Prune old entries (older than 30 days) to prevent unbounded growth
-                    cutoff_date = now - timedelta(days=30)
+                    # Collapse history to one entry per day and keep just over a
+                    # year of it. Seasonal averages need every season represented,
+                    # so a short window would leave three of the four empty; the
+                    # daily rollup is what every consumer reads anyway, so this
+                    # loses nothing and bounds the stored rows.
+                    cutoff_date = now - timedelta(days=SEASONAL_HISTORY_DAYS)
                     self._consumption_history_with_dates = [
-                        (date, liters)
-                        for date, liters in self._consumption_history_with_dates
-                        if date >= cutoff_date
+                        (day_start, liters)
+                        for day_start, liters in (
+                            (self._local_midnight(date_str), liters)
+                            for date_str, liters in daily_totals.items()
+                        )
+                        if day_start >= cutoff_date
                     ]
 
                     if self._daily_consumption_history:
@@ -1057,6 +949,12 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                             round(self._daily_consumption_usable_liters, 1),
                             len(self._daily_consumption_history),
                         )
+
+                # Seasonal stats are recalculated on every refresh, not only when
+                # consumption is detected. `data` is rebuilt from the scrape each
+                # run, so anything set only inside a consumption branch is absent
+                # (and the sensor unknown) on every other update.
+                data["seasonal_stats"] = self._calculate_seasonal_stats()
 
                 _LOGGER.info(
                     "Consumption data: total=%s L, daily=%s L/day, total_kwh=%s",
@@ -1114,6 +1012,10 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
 
                 return data
 
-        except Exception as err:
-            _LOGGER.exception("Error in _async_update_data: %s", str(err))
+        except UpdateFailed:
+            # Expected scrape/login failure - the coordinator logs it as a
+            # single warning and retries on the next interval.
             raise
+        except Exception as err:
+            _LOGGER.exception("Unexpected error in _async_update_data: %s", err)
+            raise UpdateFailed(f"Unexpected error updating tank data: {err}") from err
