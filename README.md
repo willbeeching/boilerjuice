@@ -5,239 +5,167 @@
 [![License](https://img.shields.io/github/license/willbeeching/boilerjuice)](LICENSE)
 [![HACS](https://img.shields.io/badge/HACS-Default-orange.svg)](https://github.com/hacs/integration)
 
-This custom integration allows you to monitor your BoilerJuice oil tank details in Home Assistant.
+Monitors a BoilerJuice heating oil tank in Home Assistant: level, volume, consumption, energy content and cost.
 
-## ✨ Features
-
-- 📊 Monitor your oil tank level and volume
-- 📈 Track oil consumption with accurate time-based calculations
-- 💰 View current oil prices
-- ⚡ Calculate energy costs (kWh)
-- ⏱️ Estimate days until empty
-- 🌡️ Seasonal consumption tracking (Winter/Spring/Summer/Autumn)
-- 📉 7-day rolling average for consumption
-- 🔔 Refill detection
-
-## How It Works
-
-The integration works by:
-
-1. **Data Collection**:
-
-   - Logs into your BoilerJuice account securely
-   - Scrapes tank data from your account page
-   - Fetches current oil prices from the kerosene prices page
-   - Updates once per day to avoid excessive requests
-
-2. **Tank Monitoring**:
-
-   - Tracks oil level percentage
-   - Monitors current volume and tank capacity
-   - Records tank dimensions (height, capacity)
-   - **Note**: BoilerJuice simplified their interface and now provides a single oil level (previously had separate total/usable)
-
-3. **Consumption Tracking** (Time-Based):
-
-   - **Smart tracking**: Only updates reference values when tank level actually changes
-   - **Accurate daily rate**: Spreads consumption across actual days between BoilerJuice updates
-   - **Refill detection**: Automatically detects refills and resets reference without losing history
-   - **Rolling average**: 7-day rolling average for smoother consumption trends
-   - **Seasonal analysis**: Tracks consumption patterns by season (Winter/Spring/Summer/Autumn)
-   - Converts oil consumption to energy (kWh)
-   - Estimates days until empty based on actual usage patterns
-
-4. **Energy Calculations**:
-
-   - Converts oil volume to energy using configurable kWh/L value
-   - Default energy content is 10.35 kWh/L for heating oil
-   - Calculates cost per kWh based on current oil price
-   - Helps compare heating costs with other energy sources
-
-5. **Data Updates**:
-   - Automatically refreshes data daily
-   - Updates all sensors simultaneously
-   - Maintains historical consumption data
-   - Allows manual reset of consumption counters
+BoilerJuice has no public API, so this integration signs into your account and reads the tank page. It polls once an hour. The underlying readings update far less often than that, which is why consumption is derived from level changes rather than from poll timing.
 
 ## Installation
 
-1. Copy the `custom_components/boilerjuice` folder to your Home Assistant `custom_components` directory
-2. Restart Home Assistant
-3. Go to Configuration > Integrations
-4. Click the "+ ADD INTEGRATION" button
-5. Search for "BoilerJuice" and select it
-6. Enter your BoilerJuice email and password
-7. Optionally configure the kWh per litre value (defaults to 10.35 kWh/L for heating oil)
+### HACS
+
+1. Open HACS, then Integrations.
+2. Three dots menu, top right, then Custom repositories.
+3. Add `https://github.com/willbeeching/boilerjuice` with category Integration.
+4. Find BoilerJuice and click Download.
+5. Restart Home Assistant.
+
+### Manual
+
+1. Download `boilerjuice.zip` from the [latest release](https://github.com/willbeeching/boilerjuice/releases) and extract it into `config/custom_components/`. Alternatively copy the `custom_components/boilerjuice` folder from this repository.
+2. Restart Home Assistant.
+
+### Adding the integration
+
+1. Settings, then Devices & Services, then Add Integration.
+2. Search for BoilerJuice.
+3. Enter your account email and password.
+
+Setup fails if the credentials are rejected or BoilerJuice cannot be reached, so a successful setup means the scrape worked.
 
 ## Configuration
 
-### Required Configuration
+| Option | Required | Default | Notes |
+| --- | --- | --- | --- |
+| Email | Yes | — | BoilerJuice account email |
+| Password | Yes | — | BoilerJuice account password |
+| Tank ID | No | auto-detected | Only needed if the account has multiple tanks |
+| kWh per litre | No | `10.35` | Energy content of your oil |
 
-- **Email**: Your BoilerJuice account email address
-- **Password**: Your BoilerJuice account password
+Multiple accounts are supported. Each config entry keeps its own login session and its own stored consumption history.
 
-### Optional Configuration
+## Sensors
 
-- **Tank ID**: Your tank ID if you have multiple tanks (auto-detected if not specified)
-- **kWh per litre**: Energy content of your oil in kWh per litre (default: 10.35 for heating oil)
+### Tank
 
-## Available Sensors
-
-### Tank Levels
-
-- **Oil Level** (%) - Current oil level as a percentage of tank capacity
-  - Device Class: Battery (shows as battery icon in UI)
-  - Shows the single oil level provided by BoilerJuice
-
-### Volumes
-
-- **Tank Volume** (L) - Current volume of oil in the tank
-- **Tank Capacity** (L) - Total tank capacity
+| Sensor | Unit | Notes |
+| --- | --- | --- |
+| Oil Level | % | Device class `battery`, so it renders with a battery icon |
+| Tank Volume | L | Current volume of oil |
+| Tank Capacity | L | Total tank capacity |
+| Tank Height | cm | Physical tank height |
 
 ### Consumption
 
-- **Daily Oil Consumption** (L/day) - Average daily oil consumption
-  - Calculated by spreading consumption across actual days between level changes
-  - Uses 7-day rolling average for accurate trending
-- **Total Oil Consumption** (L) - Total oil consumed since last reset
-  - Accumulates whenever tank level decreases
-- **Total Oil Consumption (kWh)** - Total energy consumed
-  - Converted from litres using kWh/L ratio
-- **Oil Consumption (kWh)** - Incremental energy consumption sensor
-  - For use with Home Assistant Energy dashboard
-- **Seasonal Oil Consumption** (L/day) - Current season's average daily consumption
-  - Tracks patterns across Winter, Spring, Summer, and Autumn
+| Sensor | Unit | Notes |
+| --- | --- | --- |
+| Daily Oil Consumption | L/day | Rolling 7-day average |
+| Total Oil Consumption | L | Accumulates since the last reset |
+| Total Oil Consumption (kWh) | kWh | The above, converted |
+| Oil Consumption (kWh) | kWh | Incremental. Use this one on the Energy dashboard |
+| Seasonal Oil Consumption | L/day | Current season's average, with per-season and per-month figures as attributes |
+| Days Until Empty | days | Current volume divided by the daily rate, falling back to an estimate of 2% of capacity per day when there is no history yet |
 
-### Cost and Energy
+### Price and energy
 
-- **BoilerJuice Oil Price** (GBP/litre) - Current oil price per litre
-- **Oil Energy Content** (kWh/L) - Energy content of your oil
-- **Oil Cost per kWh** (GBP/kWh) - Current cost of energy from your oil
+| Sensor | Unit |
+| --- | --- |
+| BoilerJuice Oil Price | GBP/litre |
+| Oil Energy Content | kWh/L |
+| Oil Cost Per kWh | GBP/kWh |
 
-### Other
+### Diagnostic
 
-- **Days Until Empty** (days) - Estimated days until tank is empty based on current consumption rate
-- **Tank Height** (cm) - Physical height of your tank
-- **Last Updated** - Timestamp of when tank level last changed (not when integration last ran)
+| Sensor | Notes |
+| --- | --- |
+| Last Updated | When the tank level last changed, not when the integration last polled. It is normal for this to sit still for days |
+
+## How consumption tracking works
+
+BoilerJuice only reports a new tank level occasionally, so consumption is inferred from the change between two readings and then apportioned across the period it spanned.
+
+```
+Dec 1, 09:00   Tank at 850 L        reference saved
+Dec 2 - Dec 5  Reading unchanged    reference stays at 850 L
+Dec 6, 09:00   Tank at 800 L        50 L used over the last 5 days
+```
+
+That 50 L is split across the days by how much of the interval fell in each, so the parts add back to exactly 50 L:
+
+```
+Dec 1   6.25 L   (09:00 to midnight)
+Dec 2  10.00 L
+Dec 3  10.00 L
+Dec 4  10.00 L
+Dec 5  10.00 L
+Dec 6   3.75 L   (midnight to 09:00)
+```
+
+Those daily totals feed the rolling 7-day average behind Daily Oil Consumption, and the per-season buckets behind Seasonal Oil Consumption.
+
+Other behaviour worth knowing:
+
+- Refills are detected rather than counted as negative consumption. When the level rises, the reference resets without discarding history.
+- The reference only moves when the level moves, so a flat reading does not dilute the rate.
+- Dated history is kept for 400 days, collapsed to one row per day. That is just over a year so each season has data to average against.
+
+### Seasonal averages need time
+
+Seasons are Winter (Dec to Feb), Spring (Mar to May), Summer (Jun to Aug) and Autumn (Sep to Nov).
+
+A season only reports once the integration has observed consumption during it. On a fresh install the current season populates quickly, but the other three read `0` until the integration has been running long enough to reach them. This is a data availability limit, not a fault.
 
 ## Services
 
-### Reset Consumption
+### `boilerjuice.reset_consumption`
 
-Resets the consumption counters to zero and sets current level as new baseline.
-
-**Use this after upgrading from older versions to clear stuck reference values.**
+Zeroes the consumption counters and takes the current level as the new baseline. Use it after upgrading from an old version to clear stuck reference values.
 
 ```yaml
 service: boilerjuice.reset_consumption
 ```
 
-### Set Consumption
+### `boilerjuice.set_consumption`
 
-Manually set consumption values (useful for initializing with known values).
+Seeds the counters with known values.
 
 ```yaml
 service: boilerjuice.set_consumption
 data:
   liters: 500 # Total litres consumed
-  daily: 15 # Optional: daily consumption rate in L/day
+  daily: 15 # Optional: daily rate in L/day
 ```
 
-## Migration from v1.0.x
+## Upgrading
 
-If you're upgrading from v1.0.x or earlier, please note:
+### To 1.3.0
 
-### Breaking Changes
+- Seasonal Oil Consumption now works. It previously reported `unknown` on most polls and could only ever populate one season. Existing installs start reporting straight away, but the remaining seasons fill in as history accrues: the fix stops data being discarded, it cannot recover what was already thrown away.
+- Consumption figures shift slightly. Multi-day consumption used to be over-attributed; the daily totals are now conserved exactly.
+- Setup now rejects bad credentials. Previously a config flow with a wrong password could create an entry that silently never updated. Remove and re-add any entry in that state.
 
-1. **Simplified Sensors**: Duplicate sensors have been removed
+### From 1.0.x
 
-   - `Total Oil Level` and `Usable Oil Level` → now just `Oil Level`
-   - `Usable Oil Volume` → now just `Tank Volume`
+Duplicate sensors were merged:
 
-2. **Update Your Dashboards**: Replace old sensor entities with new ones
-   - `sensor.my_tank_total_oil_level` → `sensor.my_tank_oil_level`
-   - `sensor.my_tank_usable_oil_level` → `sensor.my_tank_oil_level`
-   - `sensor.my_tank_usable_oil_volume` → `sensor.my_tank_tank_volume`
+| Old | New |
+| --- | --- |
+| `sensor.<tank>_total_oil_level`, `sensor.<tank>_usable_oil_level` | `sensor.<tank>_oil_level` |
+| `sensor.<tank>_usable_oil_volume` | `sensor.<tank>_tank_volume` |
 
-### Required Actions After Upgrade
-
-1. **Reset consumption tracking** to clear stuck reference values:
-
-   ```yaml
-   service: boilerjuice.reset_consumption
-   ```
-
-2. **Update automations and dashboards** that reference old sensor entities
-
-3. Old sensor entities will become `unavailable` - you can safely remove them from the entity registry
-
-## Development
-
-### Setup Development Environment
-
-1. Clone this repository
-2. Create a virtual environment: `python3 -m venv venv`
-3. Activate the virtual environment: `source venv/bin/activate`
-4. Install dependencies: `pip install -r requirements.txt`
-
-### Running Tests
-
-```bash
-python3 test_boilerjuice.py
-```
-
-### Environment Variables
-
-Create a `.env` file with your BoilerJuice credentials:
-
-```bash
-BOILERJUICE_EMAIL=your_email@example.com
-BOILERJUICE_PASSWORD=your_password
-```
-
-## How Consumption Tracking Works
-
-### Time-Based Calculation
-
-The integration uses smart time-based consumption tracking:
-
-```
-Example:
-Dec 1: Tank at 850L → Reference saved
-Dec 2-5: BoilerJuice data unchanged (850L) → Reference stays at 850L
-Dec 6: Tank at 800L → Detected 50L used over 5 days = 10 L/day ✅
-
-Old behavior would have shown: 50 L/day (dividing by 1 day) ❌
-```
-
-### Key Features
-
-1. **Only updates when level changes**: Reference values only update when BoilerJuice reports a different tank level
-2. **Spreads across actual time**: Consumption is divided by days since last level change
-3. **Refill detection**: Automatically detects when tank level goes up (refill)
-4. **Rolling average**: Maintains 7-day rolling average for smoother trends
-5. **Seasonal tracking**: Analyzes consumption patterns by season
-
-### Understanding the Sensors
-
-- **Last Updated**: Shows when tank level last **changed**, not when integration last ran
-- **Daily Consumption**: Rolling 7-day average of consumption spread across actual days
-- **Days Until Empty**: Current volume ÷ daily consumption rate
+After upgrading, update any dashboards and automations referencing the old entities, run `boilerjuice.reset_consumption` to clear stuck reference values, and remove the now-unavailable entities from the entity registry.
 
 ## Troubleshooting
 
-### Common Issues
+| Symptom | Cause or fix |
+| --- | --- |
+| Authentication errors | Re-check email and password on the BoilerJuice website |
+| Missing data | Confirm the account is active and has a tank configured |
+| Consumption stuck at 0 | Run `boilerjuice.reset_consumption` |
+| Last Updated not changing | Expected. It tracks level changes, not polls |
+| Seasonal averages showing 0 | Expected for seasons the integration has not lived through yet |
+| Sensors unavailable after upgrade | Update dashboards to the new sensor names, see Upgrading |
 
-- **Authentication errors**: Double-check your email and password
-- **Missing data**: Ensure your BoilerJuice account is active and has a tank configured
-- **Incorrect readings**: Verify your tank details on the BoilerJuice website
-- **Consumption stuck at 0**: Run the `boilerjuice.reset_consumption` service to start fresh
-- **Last Updated not changing**: This is normal if your tank level hasn't changed - it updates when BoilerJuice reports a different level
-- **Sensors unavailable after upgrade**: Update dashboard to use new simplified sensor names (see Migration section)
-
-### Debug Logging
-
-To enable debug logging, add to your `configuration.yaml`:
+### Debug logging
 
 ```yaml
 logger:
@@ -246,23 +174,36 @@ logger:
     custom_components.boilerjuice: debug
 ```
 
-### Getting Help
+### Getting help
 
-1. Check the [Home Assistant Community Forums](https://community.home-assistant.io/)
-2. Open an issue in this repository with:
-   - Home Assistant version
-   - Integration version
-   - Relevant logs (with debug enabled)
-   - Description of the issue
+Open an issue including your Home Assistant version, the integration version, a description of the problem, and relevant logs with debug enabled.
+
+## Development
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+CI runs `black`, `isort` and `flake8` over `custom_components/boilerjuice/`, plus HACS and hassfest validation. Run the formatters before pushing:
+
+```bash
+black custom_components/boilerjuice/ && isort custom_components/boilerjuice/
+```
+
+There is no automated test suite. `test_boilerjuice.py` and `test_coordinator_parsing.py` are manual scratch scripts for poking at the scraper: the first signs into the live site using credentials from a `.env` file, the second needs a saved `tank_page.html` fixture that is not in the repository.
+
+```bash
+# .env
+BOILERJUICE_EMAIL=your_email@example.com
+BOILERJUICE_PASSWORD=your_password
+```
 
 ## Contributing
 
-Feel free to contribute to the development of this integration:
-
-1. Fork the repository
-2. Create a feature branch
-3. Submit a Pull Request
+Fork, branch, and open a pull request. CI must pass.
 
 ## License
 
-This integration is licensed under MIT License.
+MIT, see [LICENSE](LICENSE).
