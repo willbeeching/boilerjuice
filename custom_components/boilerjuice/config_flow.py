@@ -14,7 +14,11 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import CONF_KWH_PER_LITRE, CONF_TANK_ID, DEFAULT_KWH_PER_LITRE, DOMAIN
-from .coordinator import BoilerJuiceDataUpdateCoordinator
+from .coordinator import (
+    BoilerJuiceAuthError,
+    BoilerJuiceConnectionError,
+    BoilerJuiceDataUpdateCoordinator,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,14 +39,21 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     coordinator = BoilerJuiceDataUpdateCoordinator(hass, data)
 
     try:
-        try:
-            await coordinator.async_refresh()
-        except Exception as err:
-            if "Invalid credentials" in str(err):
+        # async_refresh() deliberately never raises: it records the failure on
+        # the coordinator and returns. Catching around it therefore proves
+        # nothing, and validation used to fall through and create an entry even
+        # when the credentials were rejected. Inspect the outcome instead.
+        await coordinator.async_refresh()
+
+        if not coordinator.last_update_success:
+            err = coordinator.last_exception
+            if isinstance(err, BoilerJuiceAuthError):
                 raise InvalidAuth from err
-            if "Failed to login" in str(err):
+            if isinstance(err, BoilerJuiceConnectionError):
                 raise CannotConnect from err
-            raise err
+            if err is not None:
+                raise err
+            raise CannotConnect("BoilerJuice update failed for an unknown reason")
 
         # Get the model name if available, fallback to tank name, then default
         title = "BoilerJuice Tank"
