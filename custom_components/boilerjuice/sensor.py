@@ -319,31 +319,18 @@ class BoilerJuiceDaysUntilEmptySensor(BoilerJuiceSensor):
 
     @property
     def native_value(self) -> float | None:
-        """Return the state of the sensor."""
+        """Return the estimate calculated by the coordinator.
+
+        This used to recompute the estimate here, which meant two copies of
+        the same logic. They drifted: this one fell back to a hard-coded
+        510 L "usable capacity" via a key the scrape never writes, so on a
+        fresh install with no consumption history it estimated against 510 L
+        no matter the real tank size.
+        """
         if not self._coordinator.data:
             return None
 
-        usable_volume = self._coordinator.data.get("usable_volume_litres")
-        if usable_volume is None:
-            return None
-
-        # If we have actual consumption data, use it
-        daily_consumption = self._coordinator.data.get(
-            "daily_consumption_usable_liters"
-        )
-        if daily_consumption and daily_consumption > 0:
-            return round(usable_volume / daily_consumption, 1)
-
-        # Otherwise, estimate based on usable capacity
-        usable_capacity = self._coordinator.data.get(
-            "usable_capacity_litres", 510
-        )  # Default to 510L if not specified
-        if usable_capacity:
-            # Assume average daily consumption of 2% of usable capacity
-            estimated_daily_consumption = usable_capacity * 0.02
-            return round(usable_volume / estimated_daily_consumption, 1)
-
-        return None
+        return self._coordinator.data.get("days_until_empty")
 
 
 class BoilerJuiceOilLevelSensor(BoilerJuiceSensor):

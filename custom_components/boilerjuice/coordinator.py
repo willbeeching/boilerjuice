@@ -933,10 +933,6 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                 data["total_consumption_usable_kwh"] = (
                     self._total_consumption_usable_kwh
                 )
-                data["daily_consumption_usable_liters"] = (
-                    self._daily_consumption_usable_liters
-                )
-                data["days_until_empty"] = self._calculate_days_until_empty(data)
 
                 # Recalculate rolling average on every coordinator run (not just when consumption detected)
                 # This allows old incorrect data to naturally age out after 7 days
@@ -963,6 +959,15 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                         )
                         if day_start >= cutoff_date
                     ]
+
+                # Everything below is derived from the rolling average, so it is
+                # published after the recalculation above rather than before it.
+                # Set earlier, these carried the previous run's figures on any
+                # poll where no consumption was detected.
+                data["daily_consumption_usable_liters"] = (
+                    self._daily_consumption_usable_liters
+                )
+                data["days_until_empty"] = self._calculate_days_until_empty(data)
 
                 # Seasonal stats are recalculated on every refresh, not only when
                 # consumption is detected. `data` is rebuilt from the scrape each
