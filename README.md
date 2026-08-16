@@ -104,6 +104,7 @@ Those daily totals feed the rolling 7-day average behind Daily Oil Consumption, 
 
 Other behaviour worth knowing:
 
+- The rolling average uses complete days only. Today's bucket is still filling, so including it would drag the rate down: a day three hours old holds three hours of oil but would carry a full day of weight.
 - Refills are detected rather than counted as negative consumption. When the level rises, the reference resets without discarding history.
 - The reference only moves when the level moves, so a flat reading does not dilute the rate.
 - Dated history is kept for 400 days, collapsed to one row per day. That is just over a year so each season has data to average against.
@@ -140,7 +141,7 @@ data:
 ### To 1.3.0
 
 - Seasonal Oil Consumption now works. It previously reported `unknown` on most polls and could only ever populate one season. Existing installs start reporting straight away, but the remaining seasons fill in as history accrues: the fix stops data being discarded, it cannot recover what was already thrown away.
-- Consumption figures shift slightly. Multi-day consumption used to be over-attributed; the daily totals are now conserved exactly.
+- Consumption figures shift slightly. Multi-day consumption used to be over-attributed; the daily totals are now conserved exactly, and Daily Oil Consumption averages complete days only, which removes a systematic under-read of roughly 7%.
 - Setup now rejects bad credentials. Previously a config flow with a wrong password could create an entry that silently never updated. Remove and re-add any entry in that state.
 
 ### From 1.0.x

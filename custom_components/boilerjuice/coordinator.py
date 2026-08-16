@@ -368,6 +368,39 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                 )
             day += timedelta(days=1)
 
+    def _refresh_rolling_average(self, now: datetime) -> Dict[str, float]:
+        """Recompute the rolling daily rate over complete days only.
+
+        Today's bucket is still filling, so averaging it alongside finished
+        days drags the rate down - a day that is three hours old contributes
+        three hours of oil but a full day of weight. Earlier days do fill in:
+        the next detection interval starts where the last one ended and tops
+        up that day's bucket, so the current day is the only one that is ever
+        genuinely incomplete. (The very first day tracked is also partial, but
+        it ages out of the window within a week.)
+
+        Returns the regrouped daily totals so callers can reuse them.
+        """
+        daily_totals = self._calculate_daily_totals_from_history()
+
+        today = now.date().isoformat()
+        complete_days = [
+            liters for date_str, liters in daily_totals.items() if date_str < today
+        ]
+        # On a fresh install today may be all there is; reporting a partial
+        # day beats reporting nothing at all.
+        window = complete_days or list(daily_totals.values())
+
+        self._daily_consumption_history = window[-CONSUMPTION_ROLLING_DAYS:]
+        if self._daily_consumption_history:
+            self._daily_consumption_usable_liters = sum(
+                self._daily_consumption_history
+            ) / len(self._daily_consumption_history)
+        else:
+            self._daily_consumption_usable_liters = 0.0
+
+        return daily_totals
+
     def _record_consumption(self, liters_used: float, now: datetime) -> None:
         """Record observed consumption and refresh the derived averages.
 
@@ -378,18 +411,7 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         self._total_consumption_usable_kwh += liters_used * LITERS_TO_KWH
 
         self._spread_consumption_over_days(liters_used, now)
-
-        # Recompute the rolling average from the regrouped daily totals.
-        daily_totals = self._calculate_daily_totals_from_history()
-        self._daily_consumption_history = list(daily_totals.values())[
-            -CONSUMPTION_ROLLING_DAYS:
-        ]
-        if self._daily_consumption_history:
-            self._daily_consumption_usable_liters = sum(
-                self._daily_consumption_history
-            ) / len(self._daily_consumption_history)
-        else:
-            self._daily_consumption_usable_liters = 0.0
+        self._refresh_rolling_average(now)
 
         current_season = self._calculate_seasonal_stats().get("current_season", {})
         _LOGGER.info(
@@ -919,10 +941,13 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                 # Recalculate rolling average on every coordinator run (not just when consumption detected)
                 # This allows old incorrect data to naturally age out after 7 days
                 if self._consumption_history_with_dates:
-                    daily_totals = self._calculate_daily_totals_from_history()
-                    self._daily_consumption_history = list(daily_totals.values())[
-                        -CONSUMPTION_ROLLING_DAYS:
-                    ]
+                    daily_totals = self._refresh_rolling_average(now)
+
+                    _LOGGER.debug(
+                        "Recalculated rolling average: %s L/day from %d complete days",
+                        round(self._daily_consumption_usable_liters, 1),
+                        len(self._daily_consumption_history),
+                    )
 
                     # Collapse history to one entry per day and keep just over a
                     # year of it. Seasonal averages need every season represented,
@@ -938,17 +963,6 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                         )
                         if day_start >= cutoff_date
                     ]
-
-                    if self._daily_consumption_history:
-                        self._daily_consumption_usable_liters = sum(
-                            self._daily_consumption_history
-                        ) / len(self._daily_consumption_history)
-
-                        _LOGGER.debug(
-                            "Recalculated rolling average: %s L/day from %d days of data",
-                            round(self._daily_consumption_usable_liters, 1),
-                            len(self._daily_consumption_history),
-                        )
 
                 # Seasonal stats are recalculated on every refresh, not only when
                 # consumption is detected. `data` is rebuilt from the scrape each
