@@ -138,6 +138,10 @@ data:
 
 ## Upgrading
 
+### To 1.3.1
+
+Days Until Empty had two implementations, and the one the sensor actually used fell back to a hard-coded 510 L rather than your tank's real capacity. It only showed on a fresh install, before any consumption history exists, where it made the estimate roughly twice as optimistic as intended. Once history exists the figure was always correct and is unchanged.
+
 ### To 1.3.0
 
 - Seasonal Oil Consumption now works. It previously reported `unknown` on most polls and could only ever populate one season. Existing installs start reporting straight away, but the remaining seasons fill in as history accrues: the fix stops data being discarded, it cannot recover what was already thrown away.
