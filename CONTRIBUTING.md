@@ -2,29 +2,55 @@
 
 ## Getting set up
 
+The two test lanes need **different Python versions**, so they need
+different environments. Home Assistant raises its Python floor regularly,
+and the supported floor here is an older release than the current one.
+
+| Lane | Python | Home Assistant | Requirements |
+| --- | --- | --- | --- |
+| Current | 3.14 | 2026.9.0 | `requirements-test.txt` |
+| Minimum | 3.13 | 2025.2.5 | `requirements-test-min.txt` |
+
+Linting and type checking run on the current lane's interpreter, because
+mypy has to parse the annotations that version of Home Assistant ships.
+
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-dev.txt -r requirements-test.txt
+# Current lane, plus the linters. This is the one to work in.
+uv venv --python 3.14 .venv
+uv pip install --python .venv/bin/python -r requirements-dev.txt -r requirements-test.txt
+
+# Minimum lane, for checking the floor still works.
+uv venv --python 3.13 .venv-min
+uv pip install --python .venv-min/bin/python -r requirements-test-min.txt
 ```
 
-That gives you the linters and the current Home Assistant test lane. For the
-minimum lane, install `requirements-test-min.txt` into a separate
-environment: the two pin different Home Assistant versions and will fight
-over the same one.
+Each requirements file carries `# home-assistant:` and `# python:`
+annotations. `scripts/check_versions.py` checks them against the CI matrix,
+so a lane cannot end up pinned to a Home Assistant its interpreter cannot
+install. Run it after touching either file.
 
 ## Before you push
 
 ```bash
-ruff format custom_components tests scripts
-ruff check custom_components tests scripts
-mypy
-pytest --cov=custom_components.boilerjuice --cov-report=json
-python scripts/check_module_coverage.py coverage.json 95
+.venv/bin/ruff format custom_components tests scripts
+.venv/bin/ruff check custom_components tests scripts
+.venv/bin/mypy
+.venv/bin/python scripts/check_versions.py
+
+# Both lanes, because a change can pass on one and fail on the other.
+.venv/bin/python -m pytest --cov=custom_components.boilerjuice --cov-report=json
+.venv/bin/python scripts/check_module_coverage.py coverage.json 95
+.venv-min/bin/python -m pytest
 ```
 
 CI runs all of that, on both supported Home Assistant versions, plus
 hassfest, HACS validation, `actionlint` and a dependency audit.
+
+Differences between the lanes are real bugs, not noise: whether a config
+entry still counts as loaded during its own unload, and which
+device-registry lookups exist, both vary across the supported range. See
+`helpers.py` for the compatibility seam and `tests/test_ha_compat.py` for
+how both sides of it are tested without needing both lanes.
 
 ## Testing rules
 

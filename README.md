@@ -410,17 +410,21 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the module layout and the
 two invariants the code depends on.
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-dev.txt -r requirements-test.txt
-ruff format custom_components tests scripts && ruff check custom_components tests scripts
-mypy
-pytest
+uv venv --python 3.14 .venv
+uv pip install --python .venv/bin/python -r requirements-dev.txt -r requirements-test.txt
+.venv/bin/ruff format custom_components tests scripts
+.venv/bin/ruff check custom_components tests scripts
+.venv/bin/mypy
+.venv/bin/python -m pytest
 ```
+
+The two test lanes need different Python versions (3.14 for current Home
+Assistant, 3.13 for the 2025.2.5 floor), so they need separate environments.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 The test suite is entirely offline: it uses sanitised HTML fixtures, blocks
 sockets, and needs no BoilerJuice credentials. Coverage is enforced at 95%
-per module.
+per module, on both lanes.
 
 `quality_scale.yaml` tracks this integration against the
 [Integration Quality Scale](https://developers.home-assistant.io/docs/core/integration-quality-scale/rules/)
