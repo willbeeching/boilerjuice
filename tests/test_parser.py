@@ -243,15 +243,49 @@ def test_an_empty_account_is_recognised_by_its_empty_state() -> None:
 @pytest.mark.parametrize(
     "html",
     [
+        pytest.param("<p>You have no tanks yet.</p>", id="no-tanks"),
+        pytest.param("<p>You have not added a tank yet.</p>", id="not-added-a-tank"),
+        pytest.param("<p>You haven't added any tanks.</p>", id="havent-added-any"),
+        pytest.param("<p>You don't have any tanks.</p>", id="dont-have-any"),
         pytest.param(
-            '<a href="/uk/users/tanks/new">Add your first tank</a>', id="add-link"
+            '<a href="/uk/users/tanks/new">Add your first tank</a>', id="first-tank"
         ),
-        pytest.param("<p>You have no tanks yet.</p>", id="no-tanks-text"),
-        pytest.param("<p>You have not added a tank yet.</p>", id="not-added-text"),
     ],
 )
-def test_a_recognisable_empty_account_returns_no_tanks(html: str) -> None:
+def test_an_explicitly_empty_account_returns_no_tanks(html: str) -> None:
+    """Only a statement that there are no tanks counts as one."""
     assert parse_tank_ids(html) == []
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        pytest.param(
+            "<h1>Your tanks</h1>"
+            '<div class="tank-card" data-tank="123456"><h2>Garden Tank</h2>'
+            "<span>62%</span></div>"
+            '<a href="/uk/users/tanks/new">Add another tank</a>',
+            id="populated-but-redesigned",
+        ),
+        pytest.param(
+            '<a href="/uk/users/tanks/new">Add a tank</a>', id="add-link-alone"
+        ),
+        pytest.param(
+            '<button data-action="tanks#add">Add tank</button>', id="add-button"
+        ),
+    ],
+)
+def test_an_invitation_to_add_a_tank_is_not_proof_of_an_empty_account(
+    html: str,
+) -> None:
+    """An add-tank control sits happily on a populated page.
+
+    Accepting the add-tank control meant a populated account whose tank
+    markup had changed parsed as empty, and its devices were retired after
+    three polls without the layout repair ever being raised.
+    """
+    with pytest.raises(BoilerJuiceParseError):
+        parse_tank_ids(html)
 
 
 @pytest.mark.parametrize(

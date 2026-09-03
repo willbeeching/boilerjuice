@@ -34,11 +34,19 @@ _OIL_VOLUME_RE = re.compile(r"(\d+)\s*litres?\s+(?:of\s+)?oil")
 _PRICE_RE = re.compile(r"(\d+\.\d+)\s*pence per litre")
 
 # Positive evidence that a tanks page really is showing an empty account,
-# rather than being a page we no longer recognise. One of these must be
-# present before "no tank links" is believed.
-_ADD_TANK_HREF_RE = re.compile(r"/uk/users/tanks/new")
+# rather than being a page we no longer recognise. This has to be a statement
+# that the account has no tanks, not merely an invitation to add one: an
+# "Add another tank" control sits happily on a populated page, so accepting
+# it made a redesigned populated account parse as empty.
 _NO_TANKS_RE = re.compile(
-    r"no tanks?\b|not added a tank|add (?:a |your |the )?(?:first )?tank", re.I
+    r"""
+      (?:\bno|\bnot\s+any|n[o']t\s+have\s+any|do\s+not\s+have\s+any)
+      \s+tanks?\b
+    | (?:have\s+|haven[o']?t\s+|has\s+)?n[o']?t\s+added\s+(?:a|any)\s+tanks?\b
+    | add\s+your\s+first\s+tank\b
+    | \bfirst\s+tank\s+to\s+get\s+started\b
+    """,
+    re.I | re.VERBOSE,
 )
 
 _SHAPES = ("cuboid", "horizontal_cylinder", "vertical_cylinder")
@@ -160,9 +168,13 @@ def parse_price(html: str) -> float | None:
 
 
 def looks_like_empty_tank_list(soup: BeautifulSoup) -> bool:
-    """Return True when the page positively says the account has no tanks."""
-    if soup.find("a", href=_ADD_TANK_HREF_RE) is not None:
-        return True
+    """Return True when the page states that the account has no tanks.
+
+    Only an explicit statement counts. A link or button offering to add a
+    tank is not one: "Add another tank" belongs on a populated page, and
+    accepting it meant a populated account whose tank markup had changed
+    parsed as empty and had its devices quietly retired.
+    """
     return _NO_TANKS_RE.search(soup.get_text(" ")) is not None
 
 

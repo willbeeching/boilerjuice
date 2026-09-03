@@ -198,3 +198,59 @@ def test_the_matching_tag_is_accepted(checker) -> None:
     version = json.loads(MANIFEST.read_text())["version"]
 
     assert checker.main(["check_versions.py", f"v{version}"]) == 0
+
+
+# --- the requirement files ------------------------------------------------
+
+
+def dev_requirements() -> dict[str, str]:
+    """Return the exact pins in requirements-dev.txt, by normalised name."""
+    pins: dict[str, str] = {}
+    for line in (
+        (ROOT / "requirements-dev.txt").read_text(encoding="utf-8").splitlines()
+    ):
+        line = line.split("#", 1)[0].strip()
+        if match := re.fullmatch(r"([A-Za-z0-9._-]+)==([^\s;]+)", line):
+            pins[match.group(1).lower().replace("_", "-")] = match.group(2)
+    return pins
+
+
+def test_no_dev_pin_collides_with_home_assistant() -> None:
+    """CI installs this file alongside the current test lane.
+
+    Home Assistant pins many packages exactly, so an exact pin here for one
+    of them is an unsatisfiable resolution rather than a version preference:
+    `pip install -r requirements-dev.txt -r requirements-test.txt` fails
+    outright. PyYAML==6.0.2 did exactly that against Home Assistant's
+    PyYAML==6.0.3.
+    """
+    import importlib.metadata as metadata
+
+    from homeassistant.const import __version__ as installed
+
+    # Only the current lane co-installs requirements-dev.txt, so only that
+    # lane's pins are the ones that have to resolve together.
+    module = load_checker()
+    current = module._annotation(ROOT / "requirements-test.txt", "home-assistant")
+    if installed != current:
+        pytest.skip(
+            f"requirements-dev.txt is installed with {current}, not {installed}"
+        )
+
+    ha_pins = {}
+    for requirement in metadata.requires("homeassistant") or []:
+        if match := re.match(r"([A-Za-z0-9._-]+)==([^\s;,]+)", requirement.strip()):
+            ha_pins[match.group(1).lower().replace("_", "-")] = match.group(2)
+
+    assert ha_pins, "expected Home Assistant to pin something"
+
+    collisions = {
+        name: (pin, ha_pins[name])
+        for name, pin in dev_requirements().items()
+        if name in ha_pins and ha_pins[name] != pin
+    }
+
+    assert not collisions, (
+        "requirements-dev.txt pins versions Home Assistant pins differently, "
+        f"so the two files cannot be installed together: {collisions}"
+    )

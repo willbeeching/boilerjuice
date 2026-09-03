@@ -7,5 +7,9 @@
 ruff==0.16.6
 mypy==2.3.1
 pip-audit==2.9.0
-# scripts/check_versions.py reads the quality-scale tracker.
-PyYAML==6.0.2
+# Read by scripts/check_versions.py. Deliberately a floor rather than an
+# exact pin: the lint job installs this file alongside the current test
+# lane, and Home Assistant pins PyYAML exactly, so an exact pin here becomes
+# an unsatisfiable resolution the day Home Assistant moves. A test asserts
+# nothing in this file collides with Home Assistant's own pins.
+PyYAML>=6.0.2,<7

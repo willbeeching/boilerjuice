@@ -676,3 +676,53 @@ async def test_a_retired_tank_is_not_resurrected_by_a_restart(
 
     assert coordinator_of(account).tank_ids == [FIRST]
     assert tank_device(hass, account, SECOND) is None
+
+
+async def test_a_redesigned_populated_listing_does_not_retire_the_tanks(
+    hass: HomeAssistant, account: MockConfigEntry, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """An "Add another tank" control is not evidence the account is empty.
+
+    A populated page whose tank markup changed used to parse as empty, so
+    the devices were retired after three polls and no layout repair was
+    raised: the integration silently disappeared.
+    """
+    from custom_components.boilerjuice.coordinator import (
+        MISSING_LISTINGS_BEFORE_REMOVAL,
+        PARSE_FAILURES_BEFORE_REPAIR,
+    )
+    from homeassistant.helpers import issue_registry as ir
+
+    coordinator = coordinator_of(account)
+
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(LOGIN_URL, text=load_fixture("login.html"))
+    aioclient_mock.post(LOGIN_URL, text=SIGNED_IN_PAGE)
+    aioclient_mock.get(
+        TANKS_URL,
+        text=(
+            "<html><body><h1>Your tanks</h1>"
+            f'<div class="tank-card" data-tank="{FIRST}"><h2>Garden</h2></div>'
+            f'<div class="tank-card" data-tank="{SECOND}"><h2>Barn</h2></div>'
+            '<a href="/uk/users/tanks/new">Add another tank</a>'
+            "</body></html>"
+        ),
+    )
+    aioclient_mock.get(PRICE_URL, text=PRICE_PAGE)
+
+    for _ in range(
+        max(MISSING_LISTINGS_BEFORE_REMOVAL, PARSE_FAILURES_BEFORE_REPAIR) + 1
+    ):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    assert not coordinator.last_update_success
+    assert sorted(coordinator.tank_ids) == [FIRST, SECOND]
+    assert tank_device(hass, account, FIRST) is not None
+    assert tank_device(hass, account, SECOND) is not None
+    assert (
+        ir.async_get(hass).async_get_issue(
+            DOMAIN, f"page_layout_changed_{account.entry_id}"
+        )
+        is not None
+    )

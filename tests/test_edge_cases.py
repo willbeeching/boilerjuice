@@ -101,7 +101,7 @@ def test_a_tank_link_without_a_usable_id_is_skipped() -> None:
 
     html = (
         '<a href="/uk/users/tanks/notanumber/edit">Nope</a>'
-        '<a href="/uk/users/tanks/new">Add a tank</a>'
+        "<p>You have no tanks yet.</p>"
     )
 
     assert parse_tank_ids(html) == []
