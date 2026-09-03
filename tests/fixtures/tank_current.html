@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+  <head><meta name="csrf-token" content="abc123"></head>
+  <body>
+    <nav><a href="/uk/users/logout">Sign out</a></nav>
+    <div id="usable-oil">
+      <div class="oil-level" data-percentage="62.5"></div>
+    </div>
+    <p>You have 1562 litres of oil remaining in this tank.</p>
+    <form>
+      <input id="tank_size" name="tank_size" value="2500">
+      <input id="internal_height" name="internal_height" value="120">
+      <input id="tank_user_tanks_attributes_0_name" value="Garden Tank">
+      <input id="tankModelInput" value="42">
+      <input type="radio" name="tank-shape" value="cuboid">
+      <input type="radio" name="tank-shape" value="horizontal_cylinder" checked>
+      <input type="radio" name="tank-shape" value="vertical_cylinder">
+      <select id="tank_oil_type_id">
+        <option value="1">Gas Oil</option>
+        <option value="2" selected>Kerosene</option>
+      </select>
+    </form>
+    <script>
+      var jsonData = [{"id": 41, "tank": {"Brand": "Titan", "Description": "ES2500"}},
+                      {"id": 42, "tank": {"Brand": "Harlequin", "Description": "H2500T"}}];
+    </script>
+  </body>
+</html>

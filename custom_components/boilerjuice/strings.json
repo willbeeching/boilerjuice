@@ -4,7 +4,9 @@
       "user": {
         "data": {
           "email": "Email",
-          "password": "Password"
+          "password": "Password",
+          "tank_id": "Tank ID (optional)",
+          "kwh_per_litre": "Energy content (kWh per litre)"
         },
         "description": "Please enter your BoilerJuice credentials.",
         "title": "BoilerJuice Account"
@@ -13,7 +15,8 @@
     "error": {
       "cannot_connect": "Failed to connect",
       "invalid_auth": "Invalid authentication",
-      "unknown": "Unexpected error"
+      "unknown": "Unexpected error",
+      "invalid_tank_id": "The tank ID must be the number from your BoilerJuice tank URL"
     },
     "abort": {
       "already_configured": "Account is already configured"

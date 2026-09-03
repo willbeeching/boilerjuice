@@ -1,0 +1,7 @@
+# Test dependencies for the 1.3.2 hotfix branch.
+# pytest-homeassistant-custom-component pins the Home Assistant version the
+# suite runs against, so pinning it exactly pins the whole test environment.
+# home-assistant: 2026.2.3
+# python: "3.13"
+pytest-homeassistant-custom-component==0.13.316
+beautifulsoup4==4.12.2

@@ -21,6 +21,7 @@ BASE_URL = "https://www.boilerjuice.com/uk"
 LOGIN_URL = f"{BASE_URL}/users/login"
 TANKS_URL = f"{BASE_URL}/users/tanks"
 ACCOUNT_URL = f"{BASE_URL}/users/account"
+PRICE_URL = "https://www.boilerjuice.com/kerosene-prices/"
 
 # Defaults
 DEFAULT_SCAN_INTERVAL = 300  # 5 minutes
