@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import json
 
-from custom_components.boilerjuice.diagnostics import (
-    async_get_config_entry_diagnostics,
-)
+from custom_components.boilerjuice.diagnostics import async_get_config_entry_diagnostics
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
@@ -79,4 +77,5 @@ async def test_diagnostics_report_a_failing_update(
 
     assert report["update_health"]["last_update_success"] is False
     assert report["update_health"]["last_exception_type"] == "BoilerJuiceParseError"
-    assert report["update_health"]["consecutive_parse_failures"] == 1
+    assert report["update_health"]["failing_scopes"] == 1
+    assert report["update_health"]["worst_parse_failure_run"] == 1

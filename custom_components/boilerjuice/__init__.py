@@ -18,7 +18,7 @@ from homeassistant.helpers.typing import ConfigType
 
 from .const import CONF_TANK_ID, DOMAIN
 from .coordinator import BoilerJuiceDataUpdateCoordinator
-from .helpers import normalise_email
+from .helpers import device_config_entry_ids, device_tank_ids, normalise_email
 from .runtime import BoilerJuiceConfigEntry, BoilerJuiceRuntimeData
 
 _LOGGER = logging.getLogger(__name__)
@@ -84,9 +84,11 @@ def _entry_ids_for_devices(
         device = device_registry.async_get(device_id)
         if device is None:
             raise HomeAssistantError(f"Unknown device_id {device_id}")
-        entry_ids.update(
-            entry_id for entry_id in device.config_entries if entry_id in known
-        )
+        entry_ids |= {
+            entry_id
+            for entry_id in device_config_entry_ids(device)
+            if entry_id in known
+        }
     return entry_ids
 
 
@@ -114,9 +116,11 @@ def _entry_ids_for_areas(
     entry_ids: set[str] = set()
     for area_id in area_ids:
         for device in dr.async_entries_for_area(device_registry, area_id):
-            entry_ids.update(
-                entry_id for entry_id in device.config_entries if entry_id in known
-            )
+            entry_ids |= {
+                entry_id
+                for entry_id in device_config_entry_ids(device)
+                if entry_id in known
+            }
         for entity in er.async_entries_for_area(entity_registry, area_id):
             if entity.config_entry_id is not None and entity.config_entry_id in known:
                 entry_ids.add(entity.config_entry_id)
@@ -132,9 +136,11 @@ def _entry_ids_for_labels(
     entry_ids: set[str] = set()
     for label_id in label_ids:
         for device in dr.async_entries_for_label(device_registry, label_id):
-            entry_ids.update(
-                entry_id for entry_id in device.config_entries if entry_id in known
-            )
+            entry_ids |= {
+                entry_id
+                for entry_id in device_config_entry_ids(device)
+                if entry_id in known
+            }
         for entity in er.async_entries_for_label(entity_registry, label_id):
             if entity.config_entry_id is not None and entity.config_entry_id in known:
                 entry_ids.add(entity.config_entry_id)
@@ -158,11 +164,8 @@ def _tank_ids_for_devices(hass: HomeAssistant, device_ids: Iterable[str]) -> set
     tank_ids: set[str] = set()
     for device_id in device_ids:
         device = registry.async_get(device_id)
-        if device is None:
-            continue
-        tank_ids.update(
-            identifier for domain, identifier in device.identifiers if domain == DOMAIN
-        )
+        if device is not None:
+            tank_ids |= device_tank_ids(device)
     return tank_ids
 
 
@@ -222,17 +225,34 @@ def _resolve_targets(
             translation_domain=DOMAIN, translation_key="no_boilerjuice_target"
         )
 
-    # A device or entity target names a specific tank; an entry id does not.
+    # An entry id names a whole account. Everything else names specific
+    # tanks, and must resolve to some: an explicit target that resolves to no
+    # tank is an error, never a licence to rewrite every tank on the account.
+    account_wide = set(targets["entry_id"])
     named_tanks = _tank_ids_for_devices(hass, device_ids)
+
+    tank_targets = any(
+        targets[key] for key in ("device_id", "entity_id", "area_id", "label_id")
+    )
+    if tank_targets and not named_tanks:
+        raise HomeAssistantError(
+            translation_domain=DOMAIN, translation_key="no_boilerjuice_target"
+        )
 
     resolved: list[tuple[BoilerJuiceDataUpdateCoordinator, str | None]] = []
     for entry_id in sorted(entry_ids):
         coordinator = coordinators[entry_id]
-        tanks = [tank_id for tank_id in coordinator.tank_ids if tank_id in named_tanks]
-        if tanks and entry_id not in targets["entry_id"]:
-            resolved.extend((coordinator, tank_id) for tank_id in tanks)
-        else:
+        if entry_id in account_wide:
             resolved.append((coordinator, None))
+            continue
+        tanks = [tank_id for tank_id in coordinator.tank_ids if tank_id in named_tanks]
+        if not tanks:
+            # The target reached this account through a device or entity we
+            # could not tie back to a tank. Refuse rather than widen.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="no_boilerjuice_target"
+            )
+        resolved.extend((coordinator, tank_id) for tank_id in tanks)
     return resolved
 
 
@@ -248,23 +268,48 @@ def _devices_for_entities(hass: HomeAssistant, entity_ids: Iterable[str]) -> set
 
 
 def _devices_in_areas(hass: HomeAssistant, area_ids: Iterable[str]) -> set[str]:
-    """Return the device ids in the given areas."""
-    registry = dr.async_get(hass)
-    return {
+    """Return the device ids in the given areas.
+
+    Includes devices behind entities placed in the area directly: an entity
+    can override its device's area, and such an entity still names one tank.
+    """
+    devices = dr.async_get(hass)
+    entities = er.async_get(hass)
+    found = {
         device.id
         for area_id in area_ids
-        for device in dr.async_entries_for_area(registry, area_id)
+        for device in dr.async_entries_for_area(devices, area_id)
     }
+    found |= {
+        entity.device_id
+        for area_id in area_ids
+        for entity in er.async_entries_for_area(entities, area_id)
+        if entity.device_id
+    }
+    return found
 
 
 def _devices_with_labels(hass: HomeAssistant, label_ids: Iterable[str]) -> set[str]:
-    """Return the device ids carrying the given labels."""
-    registry = dr.async_get(hass)
-    return {
+    """Return the device ids carrying the given labels.
+
+    Includes devices behind labelled entities. A label on one tank's entity
+    used to resolve only as far as the account, which then reset every tank
+    on it.
+    """
+    devices = dr.async_get(hass)
+    entities = er.async_get(hass)
+    found = {
         device.id
         for label_id in label_ids
-        for device in dr.async_entries_for_label(registry, label_id)
+        for device in dr.async_entries_for_label(devices, label_id)
     }
+    found |= {
+        entity.device_id
+        for label_id in label_ids
+        for entity in er.async_entries_for_label(entities, label_id)
+        if entity.device_id
+    }
+    return found
 
 
 @callback
@@ -289,12 +334,17 @@ def async_setup_services(hass: HomeAssistant) -> None:
     async def async_handle_set_consumption(call: ServiceCall) -> None:
         """Handle the service call to set consumption values."""
         for coordinator, tank_id in _resolve_targets(hass, call):
+            # Rebasing the references needs a reading to rebase onto. Doing
+            # nothing and reporting success left the user believing their
+            # totals had been set.
             if not coordinator.data:
-                _LOGGER.warning(
-                    "Skipping set_consumption: this BoilerJuice account has no "
-                    "tank reading yet"
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN, translation_key="no_reading_yet"
                 )
-                continue
+            if tank_id is not None and coordinator.reading(tank_id) is None:
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN, translation_key="no_reading_yet"
+                )
             await coordinator.async_set_consumption(
                 call.data["liters"], call.data.get("daily"), tank_id
             )

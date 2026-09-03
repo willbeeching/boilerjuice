@@ -13,6 +13,7 @@ from custom_components.boilerjuice.const import (
     PRICE_URL,
     TANKS_URL,
 )
+from custom_components.boilerjuice.helpers import async_tank_device
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
@@ -121,3 +122,8 @@ def tracker_of(coordinator, tank_id: str = TANK_ID):
 def reading_of(coordinator, tank_id: str = TANK_ID) -> dict:
     """Return one tank's published reading."""
     return coordinator.data[tank_id]
+
+
+def tank_device(hass, entry, tank_id: str):
+    """Return one tank's device, through the version-compatible lookup."""
+    return async_tank_device(hass, tank_id, entry.entry_id)

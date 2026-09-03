@@ -37,6 +37,7 @@ from .const import (
     DOMAIN,
 )
 from .errors import BoilerJuiceAuthError, BoilerJuiceParseError
+from .helpers import async_tank_device
 from .models import TankReading
 from .parser import finite, validate_tank_id
 from .storage import AccountState, ConsumptionState, ConsumptionStore
@@ -56,6 +57,11 @@ MISSING_LISTINGS_BEFORE_REMOVAL = 3
 # poll is noise; this many in a row is a site change the user needs to
 # know about, because readings have stopped and only an update will fix it.
 PARSE_FAILURES_BEFORE_REPAIR = 3
+
+# Failures are counted per tank. Anything that goes wrong before we get as
+# far as a specific tank - listing the account, signing in - is counted
+# under this key instead.
+ACCOUNT_SCOPE = "__account__"
 
 # Re-exported so the rest of the integration has one import site for these.
 CONSUMPTION_ROLLING_DAYS = consumption.CONSUMPTION_ROLLING_DAYS
@@ -108,7 +114,10 @@ class BoilerJuiceDataUpdateCoordinator(
         # overwritten by the poll's own save.
         self._lock = asyncio.Lock()
         self._loaded = False
-        self._consecutive_parse_failures = 0
+        # Health is per tank: one broken tank must not make the others look
+        # broken, and a healthy tank must not clear a broken one's repair.
+        self._parse_failures: dict[str, int] = {}
+        self._failing: set[str] = set()
         self._last_successful_update: datetime | None = None
         self._new_tank_listeners: list[Callable[[list[str]], None]] = []
 
@@ -223,18 +232,33 @@ class BoilerJuiceDataUpdateCoordinator(
         return tracker
 
     async def _async_load(self) -> None:
-        """Load the stored state once, reporting anything unusable."""
+        """Load the stored state once, reporting anything unusable.
+
+        The loaded flag is only set after a successful read. Setting it up
+        front meant a single transient storage failure was remembered as "we
+        have loaded", so the next refresh started from empty history and the
+        first save overwrote perfectly good stored data.
+        """
         if self._loaded:
             return
-        self._loaded = True
 
         if self._store is None:
+            self._loaded = True
             return
 
-        account, problem = await self._store.async_load()
+        try:
+            account, problem = await self._store.async_load()
+        except Exception as err:
+            # Nothing is marked loaded and nothing is persisted, so the next
+            # refresh tries again against the untouched document.
+            raise UpdateFailed(
+                f"Could not read the stored consumption history: {err}"
+            ) from err
+
         self._account = account
         for tank_id in list(account.tanks):
             self._tracker_for(tank_id)
+        self._loaded = True
 
         if problem is None:
             ir.async_delete_issue(self.hass, DOMAIN, self._storage_issue_id)
@@ -258,8 +282,12 @@ class BoilerJuiceDataUpdateCoordinator(
         return f"invalid_stored_data_{self._entry_id}"
 
     async def _async_persist(self) -> None:
-        """Write the current state. Callers hold the lock."""
-        if self._store is not None:
+        """Write the current state. Callers hold the lock.
+
+        Never writes before a successful load: doing so would replace stored
+        history with whatever this process happens to hold.
+        """
+        if self._store is not None and self._loaded:
             await self._store.async_save(self._account)
 
     # ------------------------------------------------------------------
@@ -293,7 +321,7 @@ class BoilerJuiceDataUpdateCoordinator(
         async with self._lock:
             published = dict(self.data or {})
             for tracker in self._selected_trackers(tank_id):
-                tracker.set_consumption(total_litres, daily_litres)
+                tracker.set_consumption(total_litres, daily_litres, self._kwh_per_litre)
                 state = published.get(tracker.tank_id)
                 if state is not None:
                     tracker.rebase(state)
@@ -323,14 +351,25 @@ class BoilerJuiceDataUpdateCoordinator(
     # Update cycle
     # ------------------------------------------------------------------
 
+    def _selected(self) -> set[str] | None:
+        """Return the tanks the user explicitly chose, or None for "all".
+
+        This is the configuration, not the account: a tank outside it has
+        been excluded on purpose, whatever BoilerJuice happens to list.
+        """
+        if self._pinned_tank_id:
+            return {self._pinned_tank_id}
+        included = self._config_value(CONF_TANKS)
+        return set(included) if included else None
+
     def _wanted(self, listed: list[str]) -> list[str]:
         """Return the tanks this entry should track, in listing order."""
         if self._pinned_tank_id:
             return [self._pinned_tank_id]
 
-        included = self._config_value(CONF_TANKS)
-        if included:
-            return [tank_id for tank_id in listed if tank_id in included]
+        selected = self._selected()
+        if selected is not None:
+            return [tank_id for tank_id in listed if tank_id in selected]
         return listed
 
     async def _async_refresh_price(self) -> None:
@@ -360,7 +399,9 @@ class BoilerJuiceDataUpdateCoordinator(
         """Fetch each wanted tank, tolerating individual failures.
 
         One tank that will not parse must not cost the others their update,
-        but a failure across the board is a real failure.
+        but a failure across the board is a real failure. Each tank's health
+        is recorded separately so a broken one goes unavailable on its own
+        rather than sitting there showing a stale reading.
         """
         readings: dict[str, TankReading] = {}
         failures: list[Exception] = []
@@ -371,41 +412,77 @@ class BoilerJuiceDataUpdateCoordinator(
             except BoilerJuiceAuthError:
                 raise
             except UpdateFailed as err:
-                _LOGGER.warning("Could not read one of the tanks: %s", err)
+                self._note_failure(tank_id, err)
                 failures.append(err)
+            else:
+                self._note_success(tank_id)
 
         if not readings and failures:
             raise failures[0]
         return readings
 
-    def _note_absences(self, listed: list[str]) -> list[str]:
-        """Count tanks missing from an authoritative listing; return removals."""
-        removals = []
+    def _reconcile(self, wanted: list[str]) -> list[tuple[str, bool]]:
+        """Decide which tracked tanks to drop, and whether to keep history.
+
+        Two different things make a tank stop belonging here, and they
+        deserve different treatment:
+
+        - The user excluded it, or pinned a different one. That is a
+          deliberate choice made just now, so act on it immediately and keep
+          its stored history in case they change their mind. Whether
+          BoilerJuice still lists it is irrelevant, which is why this is
+          decided from the configuration rather than from the listing.
+        - BoilerJuice stopped listing a tank the user did select. That could
+          be an account change or a bad page, so wait for three consecutive
+          authoritative listings to agree, then drop it and its history.
+
+        Filtering used to be applied only when fetching, so an excluded tank
+        kept its tracker, its device and its entities for ever.
+
+        Returns (tank id, drop history) pairs.
+        """
+        removals: list[tuple[str, bool]] = []
+        wanted_set = set(wanted)
+        selected = self._selected()
+
         for tank_id in list(self._trackers):
-            if tank_id in listed:
+            if tank_id in wanted_set:
                 self._account.missing.pop(tank_id, None)
                 continue
+
+            if selected is not None and tank_id not in selected:
+                _LOGGER.info(
+                    "A tank is no longer included in this account's "
+                    "configuration; removing its device but keeping its history"
+                )
+                removals.append((tank_id, False))
+                continue
+
             seen_missing = self._account.missing.get(tank_id, 0) + 1
             self._account.missing[tank_id] = seen_missing
             if seen_missing >= MISSING_LISTINGS_BEFORE_REMOVAL:
-                removals.append(tank_id)
+                _LOGGER.info(
+                    "A tank has been absent from %d consecutive BoilerJuice "
+                    "listings; removing it",
+                    MISSING_LISTINGS_BEFORE_REMOVAL,
+                )
+                removals.append((tank_id, True))
+
         return removals
 
-    def _forget(self, tank_id: str) -> None:
-        """Drop a tank that BoilerJuice has consistently stopped listing."""
-        _LOGGER.info(
-            "A tank has been absent from %d consecutive BoilerJuice listings; "
-            "removing it",
-            MISSING_LISTINGS_BEFORE_REMOVAL,
-        )
+    def _forget(self, tank_id: str, *, drop_history: bool) -> None:
+        """Stop tracking a tank and remove its device."""
         self._trackers.pop(tank_id, None)
-        self._account.tanks.pop(tank_id, None)
         self._account.missing.pop(tank_id, None)
+        self._forget_health(tank_id)
+        if drop_history:
+            self._account.tanks.pop(tank_id, None)
 
-        registry = dr.async_get(self.hass)
-        device = registry.async_get_device(identifiers={(DOMAIN, tank_id)})
-        if device is not None and self._entry_id:
-            registry.async_update_device(
+        if not self._entry_id:
+            return
+        device = async_tank_device(self.hass, tank_id, self._entry_id)
+        if device is not None:
+            dr.async_get(self.hass).async_update_device(
                 device.id, remove_config_entry_id=self._entry_id
             )
 
@@ -434,25 +511,58 @@ class BoilerJuiceDataUpdateCoordinator(
         """Return the repair issue id for a changed BoilerJuice page."""
         return f"page_layout_changed_{self._entry_id}"
 
-    def _note_parse_failure(self) -> None:
-        """Count a page we could not read, and raise a repair if it persists."""
-        self._consecutive_parse_failures += 1
-        if self._consecutive_parse_failures != PARSE_FAILURES_BEFORE_REPAIR:
-            return
-        ir.async_create_issue(
-            self.hass,
-            DOMAIN,
-            self._layout_issue_id,
-            is_fixable=False,
-            severity=ir.IssueSeverity.ERROR,
-            translation_key="page_layout_changed",
-            learn_more_url="https://github.com/willbeeching/boilerjuice/issues",
-        )
+    def _note_failure(self, scope: str, err: Exception) -> None:
+        """Record that `scope` could not be read, and log the transition.
 
-    def _clear_parse_failures(self) -> None:
-        """Forget the failure run once a page parses again."""
-        if self._consecutive_parse_failures:
-            self._consecutive_parse_failures = 0
+        The first failure is a warning; the ones after it are debug. An
+        hourly poll against a tank that has been broken for a week would
+        otherwise write 168 identical warnings into the log.
+        """
+        if scope not in self._failing:
+            self._failing.add(scope)
+            _LOGGER.warning("A BoilerJuice tank could not be read: %s", err)
+        else:
+            _LOGGER.debug("A BoilerJuice tank still cannot be read: %s", err)
+
+        if isinstance(err, BoilerJuiceParseError):
+            self._parse_failures[scope] = self._parse_failures.get(scope, 0) + 1
+        self._refresh_layout_issue()
+
+    def _note_success(self, scope: str) -> None:
+        """Record that `scope` is readable again."""
+        if scope in self._failing:
+            self._failing.discard(scope)
+            _LOGGER.info("A BoilerJuice tank is readable again")
+        self._parse_failures.pop(scope, None)
+        self._refresh_layout_issue()
+
+    def _forget_health(self, scope: str) -> None:
+        """Drop the health record for a tank we no longer track."""
+        self._failing.discard(scope)
+        self._parse_failures.pop(scope, None)
+        self._refresh_layout_issue()
+
+    def _refresh_layout_issue(self) -> None:
+        """Raise or clear the "the site changed" repair.
+
+        Driven by the worst tank, not by the last one polled: a healthy tank
+        must not clear a repair raised for a permanently broken sibling.
+        """
+        stuck = any(
+            count >= PARSE_FAILURES_BEFORE_REPAIR
+            for count in self._parse_failures.values()
+        )
+        if stuck:
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                self._layout_issue_id,
+                is_fixable=False,
+                severity=ir.IssueSeverity.ERROR,
+                translation_key="page_layout_changed",
+                learn_more_url="https://github.com/willbeeching/boilerjuice/issues",
+            )
+        else:
             ir.async_delete_issue(self.hass, DOMAIN, self._layout_issue_id)
 
     async def _async_collect(self) -> tuple[list[str], dict[str, TankReading]]:
@@ -460,22 +570,36 @@ class BoilerJuiceDataUpdateCoordinator(
 
         Maps every failure onto the right coordinator outcome: rejected
         credentials become a reauth flow rather than an endless hourly retry.
+        Failures are attributed to the right scope, so a tank that will not
+        parse is counted against that tank and not against the account.
         """
         try:
             listed = await self._async_list_tanks()
-            wanted = self._wanted(listed)
-            if not wanted:
-                raise UpdateFailed(
-                    "No BoilerJuice tank on this account matches the "
-                    "integration's configuration"
-                )
+        except BoilerJuiceAuthError as err:
+            self._client.invalidate_session()
+            raise ConfigEntryAuthFailed(str(err)) from err
+        except UpdateFailed as err:
+            self._note_failure(ACCOUNT_SCOPE, err)
+            raise
+        except Exception as err:
+            _LOGGER.exception("Unexpected error listing BoilerJuice tanks")
+            raise UpdateFailed(f"Unexpected error listing tanks: {err}") from err
+
+        self._note_success(ACCOUNT_SCOPE)
+
+        wanted = self._wanted(listed)
+        if not wanted:
+            raise UpdateFailed(
+                "No BoilerJuice tank on this account matches the "
+                "integration's configuration"
+            )
+
+        try:
+            # Individual failures are recorded per tank inside this call.
             return listed, await self._async_fetch_readings(wanted)
         except BoilerJuiceAuthError as err:
             self._client.invalidate_session()
             raise ConfigEntryAuthFailed(str(err)) from err
-        except BoilerJuiceParseError:
-            self._note_parse_failure()
-            raise
         except UpdateFailed:
             # No reading means nothing is applied and the previous state
             # stands. The coordinator logs one warning and retries.
@@ -489,11 +613,11 @@ class BoilerJuiceDataUpdateCoordinator(
         await self._async_load()
 
         listed, readings = await self._async_collect()
-        self._clear_parse_failures()
 
         await self._async_refresh_price()
 
         known_before = set(self._trackers)
+        wanted = self._wanted(listed)
 
         async with self._lock:
             now = dt_util.now()
@@ -504,19 +628,17 @@ class BoilerJuiceDataUpdateCoordinator(
             published: dict[str, dict[str, Any]] = {}
             for tank_id, reading in readings.items():
                 tracker = self._tracker_for(tank_id)
-                tracker.apply(reading, now)
+                tracker.apply(reading, now, self._kwh_per_litre)
                 state = tracker.publish(reading, now, self._kwh_per_litre)
                 state["last_level_change"] = tracker.last_level_change
                 state["last_successful_update"] = now
                 published[tank_id] = self._with_price(state)
 
-            # Tanks we could not read this time keep their previous state
-            # rather than disappearing from the dashboard.
-            for tank_id, previous in (self.data or {}).items():
-                published.setdefault(tank_id, previous)
-
-            for tank_id in self._note_absences(listed):
-                self._forget(tank_id)
+            # A tank we could not read keeps its internal history but is not
+            # republished, so its entities go unavailable rather than showing
+            # a stale reading that looks current.
+            for tank_id, drop_history in self._reconcile(wanted):
+                self._forget(tank_id, drop_history=drop_history)
                 published.pop(tank_id, None)
 
             await self._async_persist()

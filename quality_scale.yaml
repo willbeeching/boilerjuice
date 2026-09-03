@@ -90,15 +90,18 @@ rules:
   entity-unavailable:
     status: done
     comment: >-
-      Entities are unavailable when the coordinator failed or when their tank
-      has no reading. Missing values are unknown, never zero.
+      Health is tracked per tank, so a tank that fails goes unavailable on
+      its own instead of showing a stale reading while its siblings update.
+      Missing values are unknown, never zero.
   integration-owner:
     status: done
   log-when-unavailable:
     status: done
     comment: >-
-      DataUpdateCoordinator logs once on failure and once on recovery. The
-      optional oil price logs at debug so it cannot spam hourly.
+      Logged on transition, per tank: a warning the first time a tank fails,
+      an info when it recovers, debug in between. Hourly polling against a
+      week-long outage writes one warning, not 168. The optional oil price
+      logs at debug so it cannot spam either.
   parallel-updates:
     status: todo
     comment: PARALLEL_UPDATES is not declared on the sensor platform.
@@ -176,6 +179,10 @@ rules:
       change. Both clear themselves when the condition goes away.
   stale-devices:
     status: done
+    comment: >-
+      A tank the user excludes is removed at once and keeps its history; a
+      tank BoilerJuice stops listing is removed after three consecutive
+      authoritative listings agree, and then loses its history too.
 
   # --- Platinum ---
   async-dependency:

@@ -15,9 +15,10 @@ import logging
 from collections.abc import Callable
 
 import aiohttp
+import yarl
 from bs4 import BeautifulSoup
 
-from .const import LOGIN_URL, PRICE_URL, TANKS_URL
+from .const import BASE_URL, LOGIN_URL, PRICE_URL, TANKS_URL
 from .errors import (
     BoilerJuiceAuthError,
     BoilerJuiceConnectionError,
@@ -48,6 +49,14 @@ REQUEST_TIMEOUT = aiohttp.ClientTimeout(
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
 SessionFactory = Callable[[aiohttp.ClientTimeout], aiohttp.ClientSession]
+
+# The only host we will ever send credentials to, or follow a redirect to.
+ALLOWED_HOST = yarl.URL(BASE_URL).host
+
+# 307 and 308 preserve the method and the body, so following one blindly
+# would re-post the password to wherever the redirect pointed.
+BODY_PRESERVING_REDIRECTS = (307, 308)
+REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
 
 class BoilerJuiceClient:
@@ -150,23 +159,69 @@ class BoilerJuiceClient:
         }
 
         try:
-            async with self.session.post(LOGIN_URL, data=form) as response:
-                self._classify(response.status, "BoilerJuice login request")
-                body = await self._read_text(response, "BoilerJuice login response")
-                # A rejected sign-in re-renders the form, so the reliable
-                # signals are the final URL and the presence of the password
-                # field, not the words "Sign in" which also appear in the
-                # signed-in header.
-                landed_on_login = str(response.url).rstrip("/") == LOGIN_URL.rstrip("/")
+            # Redirects are followed by hand. aiohttp would follow a 307 or a
+            # 308 by re-sending the body, so an attacker who could steer the
+            # redirect would be handed the password.
+            async with self.session.post(
+                LOGIN_URL, data=form, allow_redirects=False
+            ) as response:
+                status = response.status
+                location = response.headers.get("Location")
+                if status not in REDIRECT_STATUSES:
+                    self._classify(status, "BoilerJuice login request")
+                    body = await self._read_text(response, "BoilerJuice login response")
+                    landed_on_login = str(response.url).rstrip("/") == LOGIN_URL.rstrip(
+                        "/"
+                    )
+                else:
+                    body, landed_on_login = "", False
         except aiohttp.ClientError as err:
             raise BoilerJuiceConnectionError(f"Login request failed: {err}") from err
         except TimeoutError as err:
             raise BoilerJuiceConnectionError("Login request timed out") from err
 
+        if status in REDIRECT_STATUSES:
+            target = self._checked_redirect(status, location)
+            # A redirect away from the sign-in page is what success looks
+            # like. Follow it with a GET, never by re-posting the credentials.
+            body, final_url = await self._async_get(
+                str(target), "page after signing in"
+            )
+            landed_on_login = final_url.rstrip("/") == LOGIN_URL.rstrip("/")
+
         if landed_on_login and looks_like_login_page(body):
             raise BoilerJuiceAuthError("BoilerJuice rejected the credentials")
 
         self._signed_in = True
+
+    @staticmethod
+    def _checked_redirect(status: int, location: str | None) -> yarl.URL:
+        """Return the redirect target, refusing anything off-host.
+
+        A redirect that leaves boilerjuice.com is refused outright rather
+        than followed, and a body-preserving redirect is never followed with
+        the credentials still attached.
+        """
+        if not location:
+            raise BoilerJuiceConnectionError(
+                "BoilerJuice redirected the login request without a destination"
+            )
+
+        target = yarl.URL(LOGIN_URL).join(yarl.URL(location))
+        if target.scheme != "https" or target.host != ALLOWED_HOST:
+            # Deliberately vague: the destination is attacker-controlled in
+            # the case this guards against, so it does not go in the log.
+            raise BoilerJuiceConnectionError(
+                "BoilerJuice redirected the login somewhere unexpected; "
+                "refusing to follow it"
+            )
+        if status in BODY_PRESERVING_REDIRECTS:
+            _LOGGER.debug(
+                "Following a %s after signing in with a GET rather than "
+                "re-sending the credentials",
+                status,
+            )
+        return target
 
     async def _async_get_signed_in(self, url: str, description: str) -> str:
         """GET `url` while signed in, renewing the session once if it lapsed.

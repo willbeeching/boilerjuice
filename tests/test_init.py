@@ -10,7 +10,6 @@ from custom_components.boilerjuice import (
 from custom_components.boilerjuice.const import CONF_EMAIL, CONF_PASSWORD, DOMAIN
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
@@ -19,6 +18,7 @@ from .helpers import (
     make_entry,
     mock_site,
     setup_account,
+    tank_device,
     tank_page,
 )
 
@@ -32,7 +32,7 @@ async def test_setup_registers_the_device_and_services(
     assert hass.services.has_service(DOMAIN, SERVICE_RESET_CONSUMPTION)
     assert hass.services.has_service(DOMAIN, SERVICE_SET_CONSUMPTION)
 
-    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, "123456")})
+    device = tank_device(hass, entry, "123456")
     assert device is not None
     assert device.manufacturer == "BoilerJuice"
 
@@ -159,7 +159,7 @@ async def test_a_version_1_entry_is_migrated_without_touching_entities(
     # The email is normalised so the same account cannot be added twice.
     assert entry.unique_id == "someone@example.com"
     # Entities and devices are keyed by tank id, which has not changed.
-    assert dr.async_get(hass).async_get_device(identifiers={(DOMAIN, "123456")})
+    assert tank_device(hass, entry, "123456")
     assert any(
         state.entity_id.endswith("_oil_level")
         for state in hass.states.async_all("sensor")

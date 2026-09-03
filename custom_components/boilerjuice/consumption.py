@@ -119,13 +119,21 @@ def allocate_over_days(
     so the shares sum back to exactly `litres`. Weighting by elapsed time
     rather than by whole dates is what keeps a daylight-saving day (23 or 25
     hours long) balanced.
+
+    The shortcut is taken on the calendar date, not on the length of the
+    interval. Testing "under 24 hours" put a 23:30 to 00:30 drop entirely on
+    the second day, which is a real misallocation on the busiest hours of a
+    winter evening.
     """
     if since is None:
         return [(now, litres)]
 
     interval_seconds = (now - since).total_seconds()
-    if interval_seconds < 24 * 3600:
-        # Same-day, or the clock went backwards: no spreading needed.
+    if interval_seconds <= 0:
+        # The clock went backwards. There is no interval to spread over.
+        return [(now, litres)]
+    if since.date() == now.date():
+        # Both samples fall on one calendar day, so there is nothing to split.
         return [(now, litres)]
 
     allocated: DatedHistory = []
@@ -204,7 +212,9 @@ def seasonal_stats(
 
     stats: dict[str, Any] = {season: [] for season in SEASONS}
     stats["monthly"] = {}
-    stats["current_season"] = {"name": "", "avg": 0.0, "min": 0.0, "max": 0.0}
+    # None, not 0.0: a season we have never seen is unknown, and publishing
+    # zero would claim the tank measurably burnt nothing all winter.
+    stats["current_season"] = {"name": None, "avg": None, "min": None, "max": None}
 
     for date, litres in totals.items():
         moment = midnight(date)

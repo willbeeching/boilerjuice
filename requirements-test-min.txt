@@ -3,5 +3,6 @@
 # scripts/check_versions.py enforces that. Bump both together, never one
 # alone: a minimum nobody tests is a minimum nobody supports.
 # home-assistant: 2025.2.5
+# python: "3.13"
 pytest-homeassistant-custom-component==0.13.215
 beautifulsoup4==4.15.0

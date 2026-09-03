@@ -77,6 +77,46 @@ def test_a_clock_that_went_backwards_lands_on_one_day() -> None:
     assert consumption.daily_totals(allocated) == {"2026-01-10": 5.0}
 
 
+def test_a_drop_across_midnight_is_split_between_the_two_days() -> None:
+    """The shortcut is by calendar date, not by "under 24 hours".
+
+    Testing the duration put a 23:30 to 00:30 drop entirely on the second
+    day, which misallocates the busiest hours of a winter evening.
+    """
+    since = datetime(2026, 1, 10, 23, 30, tzinfo=LONDON)
+    now = datetime(2026, 1, 11, 0, 30, tzinfo=LONDON)
+
+    allocated = consumption.daily_totals(
+        consumption.allocate_over_days(4.0, since, now)
+    )
+
+    assert allocated == {
+        "2026-01-10": pytest.approx(2.0),
+        "2026-01-11": pytest.approx(2.0),
+    }
+
+
+def test_an_overnight_drop_is_split_by_time_in_each_day() -> None:
+    since = datetime(2026, 1, 10, 18, 0, tzinfo=LONDON)
+    now = datetime(2026, 1, 11, 6, 0, tzinfo=LONDON)
+
+    allocated = consumption.daily_totals(
+        consumption.allocate_over_days(12.0, since, now)
+    )
+
+    assert allocated == {
+        "2026-01-10": pytest.approx(6.0),
+        "2026-01-11": pytest.approx(6.0),
+    }
+    assert sum(allocated.values()) == pytest.approx(12.0)
+
+
+def test_two_samples_on_the_same_day_are_not_split() -> None:
+    allocated = consumption.allocate_over_days(4.0, at(10, 1), at(10, 23))
+
+    assert consumption.daily_totals(allocated) == {"2026-01-10": 4.0}
+
+
 # --- rolling rate ---------------------------------------------------------
 
 
@@ -206,10 +246,17 @@ def test_seasonal_stats_are_empty_without_history() -> None:
     assert consumption.seasonal_stats({}, at(10), midnight) == {}
 
 
-def test_the_current_season_is_blank_when_it_has_no_data() -> None:
+def test_a_season_with_no_data_is_unknown_not_a_measured_zero() -> None:
+    """0.0 L/day would claim the tank measurably burnt nothing all winter."""
     stats = consumption.seasonal_stats({"2026-07-05": 2.0}, at(10), midnight)
 
-    assert stats["current_season"]["name"] == ""
+    assert stats["current_season"] == {
+        "name": None,
+        "avg": None,
+        "min": None,
+        "max": None,
+    }
+    assert "winter_avg" not in stats
 
 
 @pytest.mark.parametrize(

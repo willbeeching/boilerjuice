@@ -34,7 +34,11 @@ ignore = [
 convention = "pep257"
 
 [tool.mypy]
-python_version = "3.13"
+# The current test lane's interpreter. Home Assistant's own annotations use
+# syntax the older mode cannot parse, so typing runs on the newer one while
+# the code itself still has to work on the supported floor - which is what
+# ruff's target-version keeps honest.
+python_version = "3.14"
 strict = true
 packages = ["custom_components.boilerjuice"]
 # Home Assistant ships py.typed but its own annotations are not complete

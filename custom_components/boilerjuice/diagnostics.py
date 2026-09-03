@@ -92,7 +92,10 @@ async def async_get_config_entry_diagnostics(
                 else None
             ),
             "tank_count": len(coordinator.tank_ids),
-            "consecutive_parse_failures": coordinator._consecutive_parse_failures,
+            "failing_scopes": len(coordinator._failing),
+            "worst_parse_failure_run": max(
+                coordinator._parse_failures.values(), default=0
+            ),
         },
         "tanks": [
             _tank_diagnostics(index, published.get(tank_id, {}), tracker)

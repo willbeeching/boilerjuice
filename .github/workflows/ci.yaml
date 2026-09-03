@@ -13,9 +13,10 @@ permissions:
   contents: read
 
 env:
-  # The version the linters and the current test lane run on. The minimum
-  # lane pins its own interpreter below.
-  PYTHON_VERSION: "3.13"
+  # Linting and typing run on the same interpreter as the current test lane,
+  # because mypy has to parse the Home Assistant annotations that lane
+  # installs. The minimum lane pins its own interpreter in the matrix.
+  PYTHON_VERSION: "3.14"
 
 jobs:
   lint:
@@ -67,10 +68,17 @@ jobs:
         include:
           # The floor declared in hacs.json, and the current release. A
           # minimum nobody tests is a minimum nobody supports.
+          #
+          # Each lane names its own interpreter: Home Assistant raises its
+          # Python floor regularly, so the two lanes do not share one.
+          # scripts/check_versions.py checks these against the annotations in
+          # the requirements files.
           - lane: minimum
             requirements: requirements-test-min.txt
+            python: "3.13"
           - lane: current
             requirements: requirements-test.txt
+            python: "3.14"
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -78,7 +86,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ matrix.python }}
 
       - name: Install dependencies
         run: |

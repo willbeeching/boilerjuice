@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import aiohttp
 import pytest
-from custom_components.boilerjuice.client import (
-    MAX_RESPONSE_BYTES,
-    BoilerJuiceClient,
-)
+from custom_components.boilerjuice.client import MAX_RESPONSE_BYTES, BoilerJuiceClient
 from custom_components.boilerjuice.const import LOGIN_URL, PRICE_URL, TANKS_URL
 from custom_components.boilerjuice.errors import (
     BoilerJuiceAuthError,
@@ -229,3 +226,97 @@ async def test_closing_the_client_twice_is_harmless(
 ) -> None:
     await client.async_close()
     await client.async_close()
+
+
+async def test_a_same_host_redirect_after_signing_in_is_followed(
+    aioclient_mock: AiohttpClientMocker, client: BoilerJuiceClient
+) -> None:
+    """A redirect away from the sign-in page is what success looks like."""
+    aioclient_mock.get(LOGIN_URL, text=load_fixture("login.html"))
+    aioclient_mock.post(
+        LOGIN_URL,
+        status=302,
+        headers={"Location": "https://www.boilerjuice.com/uk/users/account"},
+        text="",
+    )
+    aioclient_mock.get(
+        "https://www.boilerjuice.com/uk/users/account", text=SIGNED_IN_PAGE
+    )
+    aioclient_mock.get(TANK_URL, text=tank_page(percentage=80, litres=2000))
+
+    reading = await client.async_fetch_tank("123456")
+
+    assert reading.volume_litres == 2000
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+async def test_a_redirect_off_host_is_refused_not_followed(
+    aioclient_mock: AiohttpClientMocker, client: BoilerJuiceClient, status: int
+) -> None:
+    """307 and 308 preserve the body, so following one would re-post the password."""
+    aioclient_mock.get(LOGIN_URL, text=load_fixture("login.html"))
+    aioclient_mock.post(
+        LOGIN_URL,
+        status=status,
+        headers={"Location": "https://evil.example.com/collect"},
+        text="",
+    )
+
+    with pytest.raises(BoilerJuiceConnectionError):
+        await client.async_fetch_tank("123456")
+
+    # Nothing was sent to the redirect target at all.
+    assert not [
+        call for call in aioclient_mock.mock_calls if "evil.example.com" in str(call[1])
+    ]
+
+
+async def test_a_downgrade_to_http_is_refused(
+    aioclient_mock: AiohttpClientMocker, client: BoilerJuiceClient
+) -> None:
+    aioclient_mock.get(LOGIN_URL, text=load_fixture("login.html"))
+    aioclient_mock.post(
+        LOGIN_URL,
+        status=302,
+        headers={"Location": "http://www.boilerjuice.com/uk/users/account"},
+        text="",
+    )
+
+    with pytest.raises(BoilerJuiceConnectionError):
+        await client.async_fetch_tank("123456")
+
+
+async def test_a_redirect_with_no_destination_is_refused(
+    aioclient_mock: AiohttpClientMocker, client: BoilerJuiceClient
+) -> None:
+    aioclient_mock.get(LOGIN_URL, text=load_fixture("login.html"))
+    aioclient_mock.post(LOGIN_URL, status=302, text="")
+
+    with pytest.raises(BoilerJuiceConnectionError):
+        await client.async_fetch_tank("123456")
+
+
+async def test_a_redirect_back_to_the_login_page_is_a_rejected_sign_in(
+    aioclient_mock: AiohttpClientMocker, client: BoilerJuiceClient
+) -> None:
+    aioclient_mock.get(LOGIN_URL, text=load_fixture("login.html"))
+    aioclient_mock.post(LOGIN_URL, status=302, headers={"Location": LOGIN_URL}, text="")
+
+    with pytest.raises(BoilerJuiceAuthError):
+        await client.async_fetch_tank("123456")
+
+
+async def test_the_password_is_only_ever_posted_to_boilerjuice(
+    aioclient_mock: AiohttpClientMocker, client: BoilerJuiceClient
+) -> None:
+    mock_sign_in(aioclient_mock)
+    aioclient_mock.get(TANK_URL, text=tank_page(percentage=80, litres=2000))
+
+    await client.async_fetch_tank("123456")
+
+    posts = [call for call in aioclient_mock.mock_calls if call[0] == "POST"]
+    assert posts
+    for _method, url, data, _headers in posts:
+        assert url.host == "www.boilerjuice.com"
+        assert url.scheme == "https"
+        assert "hunter2" in str(data)

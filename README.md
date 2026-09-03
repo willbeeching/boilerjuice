@@ -91,8 +91,8 @@ Changed afterwards through **Reconfigure** on the integration entry:
 | Option | Notes |
 | --- | --- |
 | Password | Leave blank to keep the current one |
-| kWh per litre | Applied to every kWh figure from the next poll |
-| Tanks to track | Which of the account's tanks get entities |
+| kWh per litre | Applied to oil burnt from the next poll on, not retrospectively |
+| Tanks to track | Which of the account's tanks get entities. Excluding a tank removes its device on the next poll and keeps its history in case you put it back |
 
 If BoilerJuice stops accepting your password, Home Assistant raises a
 **Reconfigure**-style repair asking for the new one. It does not silently
@@ -127,7 +127,7 @@ One set per tank.
 | --- | --- | --- |
 | Daily oil consumption | L/day | Rolling 7-day average. Unknown until a complete day has been measured. `sample_days` says how much evidence is behind it |
 | Total oil consumption | L | Accumulates since the last reset |
-| Total oil energy | kWh | The above times your kWh per litre. **This is the Energy dashboard sensor** |
+| Total oil energy | kWh | Accumulated using the kWh per litre in force at the time. **This is the Energy dashboard sensor** |
 | Seasonal oil consumption | L/day | Current season's average, with per-season and per-month figures as attributes |
 | Days until empty | d | Current volume divided by the daily rate, falling back to an estimate of 2% of capacity per day when there is no history yet |
 
@@ -182,6 +182,8 @@ Other behaviour worth knowing:
   level rises, the reference resets without discarding history.
 - The reference only moves when the level moves, so a flat reading does not
   dilute the rate.
+- A drop spanning midnight is split between the two days by the time in
+  each, not credited whole to the day it was noticed.
 - Weighting is by elapsed time, so a 23- or 25-hour daylight-saving day
   neither gains nor loses oil.
 - Dated history is kept for 400 days, collapsed to one row per day. That is
@@ -313,9 +315,12 @@ at Total oil energy. Its historical statistics do not carry across.
   dashboards and low-battery alerts.
 - Sensors report unknown rather than 0 when there is nothing to report: a
   daily rate before a complete day has been measured, a season with no data.
-- Changing kWh per litre now affects every kWh figure, including the total.
-  Previously the total was hard-coded to 10.35 while the cost sensors used
-  your configured value.
+- Changing kWh per litre now affects every kWh figure. Previously the total
+  was hard-coded to 10.35 while the cost sensors used your configured value.
+  It applies to oil burnt from that point on, not retrospectively: Total oil
+  energy is a `total_increasing` sensor, so restating its history would show
+  up in long-term statistics as a jump, or as a meter reset if the number
+  went down.
 - Consumption history moves to a per-account storage document, automatically,
   on first start. If it cannot be read it is discarded and you get a repair
   notification saying so, rather than the history silently resetting.
@@ -361,6 +366,7 @@ Duplicate sensors were merged:
 | A "sign in again" repair appeared | Your BoilerJuice password changed, or the account was locked. Click through the repair and enter the current password |
 | A "BoilerJuice has changed its website" repair appeared | The site's layout moved. Check for an integration update; if there is not one, open a "Readings have stopped" issue |
 | A "consumption history was reset" repair appeared | The stored history could not be read and was discarded. Current readings are unaffected. Re-seed the totals with `boilerjuice.set_consumption` if you know them |
+| One tank unavailable, the others fine | That tank could not be read. Its history is safe; it becomes available again on the first successful poll. The log carries one warning per outage, not one per hour |
 | Entities unavailable | The last poll failed. Check the logs; the integration retries hourly |
 | Consumption stuck at 0 | Expected until BoilerJuice publishes a lower level than the one recorded as the reference |
 | Daily consumption unknown | Expected until a complete day has been measured. `sample_days` on the sensor says how many days it has |

@@ -71,12 +71,21 @@ class TankTracker:
         return self.state.last_update
 
     def total_kwh(self, kwh_per_litre: float) -> float:
-        """Return the total in kWh.
+        """Return the total energy burnt, in kWh.
 
-        Always derived from litres, never stored independently, so it cannot
-        drift from the litre total or from the configured energy content.
+        Accumulated with the factor in force at the time, not recomputed from
+        the litre total. The sensor is TOTAL_INCREASING: recomputing history
+        after the user changed "kWh per litre" would look like a jump in
+        long-term statistics, or a meter reset if the factor went down.
         """
-        return self.state.total_litres * kwh_per_litre
+        self.seed_energy(kwh_per_litre)
+        assert self.state.total_kwh is not None
+        return self.state.total_kwh
+
+    def seed_energy(self, kwh_per_litre: float) -> None:
+        """Give a document written before energy was stored a starting point."""
+        if self.state.total_kwh is None:
+            self.state.total_kwh = self.state.total_litres * kwh_per_litre
 
     # ------------------------------------------------------------------
     # Mutations
@@ -88,14 +97,22 @@ class TankTracker:
         self._sample_days = 0
 
     def set_consumption(
-        self, total_litres: float, daily_litres: float | None = None
+        self,
+        total_litres: float,
+        daily_litres: float | None = None,
+        kwh_per_litre: float = 0.0,
     ) -> None:
         """Set the totals by hand.
+
+        Energy is rebased on the current factor, because the user is stating
+        a total rather than reporting measured burn. Any statistics jump is
+        the direct result of an action they took deliberately.
 
         `daily_litres` is a persistent override: it survives polls and
         restarts until a reset clears it.
         """
         self.state.total_litres = total_litres
+        self.state.total_kwh = total_litres * kwh_per_litre
         if daily_litres is not None:
             self.state.daily_override = daily_litres
 
@@ -119,7 +136,7 @@ class TankTracker:
         self.state.reference_volume = volume
         self.state.reference_level = level
 
-    def apply(self, reading: TankReading, now: datetime) -> None:
+    def apply(self, reading: TankReading, now: datetime, kwh_per_litre: float) -> None:
         """Move the running totals on from a validated reading."""
         if self.state.reference_volume is None and self.state.reference_level is None:
             _LOGGER.info(
@@ -148,7 +165,7 @@ class TankTracker:
                 round(transition.litres_consumed, 1),
                 transition.source,
             )
-            self._record(transition.litres_consumed, now)
+            self._record(transition.litres_consumed, now, kwh_per_litre)
 
         # Only advance a reference we actually have a fresh reading for. A
         # reading that carries a level but no volume must not blank the volume
@@ -158,9 +175,12 @@ class TankTracker:
         if reading.level_percentage is not None:
             self.state.reference_level = reading.level_percentage
 
-    def _record(self, litres: float, now: datetime) -> None:
+    def _record(self, litres: float, now: datetime, kwh_per_litre: float) -> None:
         """Record observed consumption and refresh the derived averages."""
+        self.seed_energy(kwh_per_litre)
         self.state.total_litres += litres
+        # The factor in force now, applied to the litres burnt now.
+        self.state.total_kwh = (self.state.total_kwh or 0.0) + litres * kwh_per_litre
         self.state.history.extend(
             consumption.allocate_over_days(litres, self.state.last_update, now)
         )

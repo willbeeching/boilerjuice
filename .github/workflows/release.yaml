@@ -5,7 +5,7 @@ on:
     tags:
       - "v*.*.*"
 
-# The release job needs to create a release; nothing else needs write access.
+# The publish job needs to create a release; nothing else needs write access.
 permissions:
   contents: read
 
@@ -30,20 +30,31 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: "3.14"
 
-      - name: Read the version from the tag
+      - name: Read and validate the tag
         id: version
+        # The ref reaches the shell through the environment, never through
+        # template interpolation, so its contents cannot become shell syntax.
+        env:
+          REF: ${{ github.ref }}
         run: |
-          VERSION="${GITHUB_REF#refs/tags/}"
-          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "NUMBER=${VERSION#v}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          version="${REF#refs/tags/}"
+          if ! printf '%s' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Tag '$version' is not vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_OUTPUT"
 
       - name: Check the tag matches the manifest and the HACS floor
-        run: python scripts/check_versions.py "${{ steps.version.outputs.VERSION }}"
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: python scripts/check_versions.py "$VERSION"
 
       - name: Build the archive
         run: |
+          set -euo pipefail
           cd custom_components
           zip -r ../boilerjuice.zip boilerjuice -x '*.pyc' -x '*__pycache__*'
 
@@ -54,7 +65,9 @@ jobs:
 
       - name: Record the digest
         id: digest
-        run: echo "SHA256=$(sha256sum boilerjuice.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          echo "SHA256=$(sha256sum boilerjuice.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Keep the archive for the release job
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -80,21 +93,59 @@ jobs:
         with:
           name: boilerjuice-zip
 
-      - name: Generate the changelog
-        id: changelog
+      - name: Write the release notes
+        # Written to a file rather than a workflow output: a commit subject
+        # containing the heredoc delimiter, or a line looking like a workflow
+        # command, cannot break out of a file.
+        env:
+          VERSION: ${{ needs.package.outputs.version }}
+          DIGEST: ${{ needs.package.outputs.digest }}
+          COMMIT: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          PREV_TAG="$(git describe --abbrev=0 --tags "${{ needs.package.outputs.version }}^" 2>/dev/null || true)"
-          echo "PREV_TAG=$PREV_TAG" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          previous="$(git describe --abbrev=0 --tags "${VERSION}^" 2>/dev/null || true)"
+
           {
-            echo "CHANGELOG<<CHANGELOG_EOF"
-            if [ -n "$PREV_TAG" ]; then
-              git log --pretty=format:'- %s' "$PREV_TAG..${{ needs.package.outputs.version }}"
+            echo "## Changes"
+            echo
+            if [ -n "$previous" ]; then
+              git log --pretty=format:'- %s' "${previous}..${VERSION}"
               echo
             else
               echo "- Initial release"
             fi
-            echo "CHANGELOG_EOF"
-          } >> "$GITHUB_OUTPUT"
+            echo
+            echo "## Installation"
+            echo
+            echo "### HACS"
+            echo
+            echo "Add \`https://github.com/${REPOSITORY}\` as a custom repository"
+            echo "with category Integration, download BoilerJuice, then restart"
+            echo "Home Assistant."
+            echo
+            echo "### Manual"
+            echo
+            echo "Download \`boilerjuice.zip\` below, extract it into"
+            echo "\`config/custom_components/\`, and restart Home Assistant."
+            echo
+            echo "## Verifying the download"
+            echo
+            echo '```'
+            echo "sha256sum boilerjuice.zip"
+            echo "$DIGEST"
+            echo '```'
+            echo
+            echo "Built from ${COMMIT}, which passed the full CI suite (lint,"
+            echo "strict typing, both supported Home Assistant versions, hassfest"
+            echo "and HACS validation) before publication."
+            if [ -n "$previous" ]; then
+              echo
+              echo "**Full changelog**: https://github.com/${REPOSITORY}/compare/${previous}...${VERSION}"
+            fi
+          } > release-notes.md
+
+          cat release-notes.md
 
       - name: Create the release with its archive
         # One call, so the release and its asset appear together rather than
@@ -104,35 +155,6 @@ jobs:
           tag_name: ${{ needs.package.outputs.version }}
           name: BoilerJuice ${{ needs.package.outputs.version }}
           files: boilerjuice.zip
+          body_path: release-notes.md
           draft: false
           prerelease: false
-          body: |
-            ## Changes
-
-            ${{ steps.changelog.outputs.CHANGELOG }}
-
-            ## Installation
-
-            ### HACS
-
-            Add `https://github.com/willbeeching/boilerjuice` as a custom
-            repository with category Integration, download BoilerJuice, then
-            restart Home Assistant.
-
-            ### Manual
-
-            Download `boilerjuice.zip` below, extract it into
-            `config/custom_components/`, and restart Home Assistant.
-
-            ## Verifying the download
-
-            ```
-            sha256sum boilerjuice.zip
-            ${{ needs.package.outputs.digest }}
-            ```
-
-            This release was built from ${{ github.sha }}, which passed the
-            full CI suite (lint, strict typing, both supported Home Assistant
-            versions, hassfest and HACS validation) before publication.
-
-            **Full changelog**: https://github.com/${{ github.repository }}/compare/${{ steps.changelog.outputs.PREV_TAG }}...${{ needs.package.outputs.version }}

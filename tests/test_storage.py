@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from custom_components.boilerjuice.const import DOMAIN
+from custom_components.boilerjuice.const import CONF_KWH_PER_LITRE, DOMAIN
 from custom_components.boilerjuice.coordinator import BoilerJuiceDataUpdateCoordinator
 from custom_components.boilerjuice.storage import (
     LEGACY_STORAGE_KEY,
@@ -484,9 +484,7 @@ async def test_a_run_of_unreadable_pages_raises_a_repair(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
     """A persistent layout change needs the user to look for an update."""
-    from custom_components.boilerjuice.coordinator import (
-        PARSE_FAILURES_BEFORE_REPAIR,
-    )
+    from custom_components.boilerjuice.coordinator import PARSE_FAILURES_BEFORE_REPAIR
 
     from .helpers import load_fixture
 
@@ -514,5 +512,140 @@ async def test_a_run_of_unreadable_pages_raises_a_repair(
         await coordinator.async_refresh()
         await hass.async_block_till_done()
         assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+    finally:
+        await coordinator.async_close()
+
+
+async def test_a_transient_storage_failure_does_not_lose_the_history(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, hass_storage
+) -> None:
+    """Marking storage loaded before the read succeeded destroyed history.
+
+    The flag was set up front, so a single failed read was remembered as "we
+    have loaded"; the next refresh started from empty history and the first
+    save overwrote a perfectly good document.
+    """
+    from unittest.mock import patch
+
+    entry = make_entry(hass)
+    hass_storage[entry_key(entry)] = {
+        "version": STORAGE_VERSION,
+        "data": document_from_account(
+            AccountState(tanks={"123456": ConsumptionState(total_litres=340.0)})
+        ),
+    }
+    coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
+
+    try:
+        mock_site(aioclient_mock, tank_html=tank_page(percentage=80, litres=2000))
+
+        with patch(
+            "custom_components.boilerjuice.storage.ConsumptionStore.async_load",
+            side_effect=OSError("disk hiccup"),
+        ):
+            await coordinator.async_refresh()
+            await hass.async_block_till_done()
+
+        assert not coordinator.last_update_success
+        # Nothing was written over the top of the good document.
+        assert stored(hass_storage, entry_key(entry))["total_litres"] == 340.0
+
+        # The next refresh tries the read again rather than assuming it ran.
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+        assert coordinator.last_update_success
+        assert tracker_of(coordinator).total_litres == 340.0
+    finally:
+        await coordinator.async_close()
+
+
+async def test_changing_the_energy_content_does_not_rewrite_past_energy(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """The energy sensor is TOTAL_INCREASING, so history must not move.
+
+    Recomputing the whole total with a new factor shows up in long-term
+    statistics as a jump, or as a meter reset when the factor goes down.
+    """
+    entry = make_entry(hass, **{CONF_KWH_PER_LITRE: 10.0})
+    coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
+
+    try:
+        mock_site(aioclient_mock, tank_html=tank_page(percentage=80, litres=2000))
+        await coordinator.async_refresh()
+        mock_site(aioclient_mock, tank_html=tank_page(percentage=79, litres=1900))
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+        tracker = tracker_of(coordinator)
+        assert tracker.total_litres == 100.0
+        assert tracker.total_kwh(10.0) == pytest.approx(1000.0)
+
+        # The user corrects the factor. The 100 L already burnt keep the
+        # energy they were recorded with.
+        coordinator._kwh_per_litre = 5.0
+        mock_site(aioclient_mock, tank_html=tank_page(percentage=78, litres=1800))
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+        assert tracker.total_litres == 200.0
+        # 100 L at 10.0 plus 100 L at 5.0, not 200 L at 5.0.
+        assert tracker.total_kwh(5.0) == pytest.approx(1500.0)
+    finally:
+        await coordinator.async_close()
+
+
+async def test_energy_carries_across_from_the_v1_document(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    """v1 stored energy, so upgrading must not restate it."""
+    entry = make_entry(hass)
+    hass_storage[LEGACY_STORAGE_KEY] = {
+        "version": LEGACY_STORAGE_VERSION,
+        "data": {"123456": legacy_document()},
+    }
+    store = ConsumptionStore(hass, entry.entry_id, "123456")
+
+    account, _ = await store.async_load()
+
+    assert account.tanks["123456"].total_kwh == 3519.0
+
+
+async def test_a_document_without_energy_is_seeded_once(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """A document written before energy was stored gets a starting point."""
+    entry = make_entry(hass, **{CONF_KWH_PER_LITRE: 9.0})
+    coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
+
+    try:
+        mock_site(aioclient_mock, tank_html=tank_page(percentage=80, litres=2000))
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+        tracker = tracker_of(coordinator)
+        tracker.state.total_litres = 100.0
+        tracker.state.total_kwh = None
+
+        assert tracker.total_kwh(9.0) == pytest.approx(900.0)
+    finally:
+        await coordinator.async_close()
+
+
+async def test_setting_the_total_by_hand_rebases_the_energy(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Stating a total is a deliberate act, so a statistics jump is expected."""
+    entry = make_entry(hass, **{CONF_KWH_PER_LITRE: 9.6})
+    coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
+
+    try:
+        mock_site(aioclient_mock, tank_html=tank_page(percentage=80, litres=2000))
+        await coordinator.async_refresh()
+        await coordinator.async_set_consumption(100.0)
+        await hass.async_block_till_done()
+
+        assert tracker_of(coordinator).total_kwh(9.6) == pytest.approx(960.0)
     finally:
         await coordinator.async_close()

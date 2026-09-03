@@ -21,7 +21,7 @@ from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
-from .helpers import coordinator_of, reading_of, setup_account, tracker_of
+from .helpers import coordinator_of, reading_of, setup_account, tank_device, tracker_of
 
 
 @pytest.fixture
@@ -87,8 +87,7 @@ async def test_a_device_target_reaches_only_that_account(
     hass: HomeAssistant, two_accounts
 ) -> None:
     _, second = two_accounts
-    device_registry = dr.async_get(hass)
-    device = device_registry.async_get_device(identifiers={(DOMAIN, "111111")})
+    device = tank_device(hass, two_accounts[0], "111111")
     assert device is not None
 
     await hass.services.async_call(
@@ -170,9 +169,8 @@ async def test_a_label_target_reaches_only_that_account(
 
     first, second = two_accounts
     label = lr.async_get(hass).async_create("Oil")
-    device_registry = dr.async_get(hass)
-    device = device_registry.async_get_device(identifiers={(DOMAIN, "111111")})
-    device_registry.async_update_device(device.id, labels={label.label_id})
+    device = tank_device(hass, first, "111111")
+    dr.async_get(hass).async_update_device(device.id, labels={label.label_id})
 
     await hass.services.async_call(
         DOMAIN,
@@ -192,9 +190,8 @@ async def test_an_area_target_reaches_only_that_account(
 
     first, second = two_accounts
     area = ar.async_get(hass).async_create("Utility")
-    device_registry = dr.async_get(hass)
-    device = device_registry.async_get_device(identifiers={(DOMAIN, "222222")})
-    device_registry.async_update_device(device.id, area_id=area.id)
+    device = tank_device(hass, second, "222222")
+    dr.async_get(hass).async_update_device(device.id, area_id=area.id)
 
     await hass.services.async_call(
         DOMAIN,
@@ -301,20 +298,21 @@ async def test_set_consumption_also_sets_the_daily_rate(
     assert reading_of(coordinator)["daily_consumption_usable_liters"] == 7.5
 
 
-async def test_set_consumption_skips_an_account_with_no_reading_yet(
+async def test_set_consumption_refuses_an_account_with_no_reading_yet(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
+    """Doing nothing quietly left the user believing their totals were set."""
     entry = await setup_account(hass, aioclient_mock)
     coordinator = coordinator_of(entry)
     coordinator.data = None
 
-    await hass.services.async_call(
-        DOMAIN,
-        SERVICE_SET_CONSUMPTION,
-        {"liters": 100.0, "entry_id": entry.entry_id},
-        blocking=True,
-    )
-    await hass.async_block_till_done()
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_SET_CONSUMPTION,
+            {"liters": 100.0, "entry_id": entry.entry_id},
+            blocking=True,
+        )
 
     assert tracker_of(coordinator).total_litres == 0.0
 

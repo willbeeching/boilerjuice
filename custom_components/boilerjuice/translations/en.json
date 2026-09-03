@@ -137,6 +137,9 @@
     },
     "no_boilerjuice_target": {
       "message": "The target of this action does not include any BoilerJuice tank."
+    },
+    "no_reading_yet": {
+      "message": "That BoilerJuice tank has no reading yet, so there is nothing to set the consumption against. Wait for a successful update and try again."
     }
   }
 }

@@ -59,6 +59,13 @@ class ConsumptionState:
     """
 
     total_litres: float = 0.0
+    # Energy is accumulated with the factor in force when each litre was
+    # burnt, not recomputed from the litre total. The energy sensor is
+    # TOTAL_INCREASING, so recalculating history after a change to "kWh per
+    # litre" would show up in long-term statistics as a jump, or - if the
+    # factor went down - as a meter reset. None means "not seeded yet", for
+    # documents written before energy was stored.
+    total_kwh: float | None = None
     # None means "no complete day has been measured yet", which the sensors
     # show as unknown rather than as a confident 0 L/day.
     daily_litres: float | None = None
@@ -155,6 +162,9 @@ def state_from_document(document: Any) -> ConsumptionState:
         total_litres=_number(
             document.get("total_litres", 0.0), low=0, high=MAX_TOTAL_LITRES
         ),
+        total_kwh=_optional_number(
+            document.get("total_kwh"), low=0, high=MAX_TOTAL_LITRES * 100
+        ),
         daily_litres=_optional_number(
             document.get("daily_litres"), low=0, high=MAX_TOTAL_LITRES
         ),
@@ -180,6 +190,7 @@ def document_from_state(state: ConsumptionState) -> dict[str, Any]:
     """Return the document to persist for `state`."""
     return {
         "total_litres": state.total_litres,
+        "total_kwh": state.total_kwh,
         "daily_litres": state.daily_litres,
         "daily_override": state.daily_override,
         "reference_volume": state.reference_volume,
@@ -204,6 +215,11 @@ def state_from_legacy_document(document: Any) -> ConsumptionState:
     return ConsumptionState(
         total_litres=_number(
             document.get("total_consumption_liters", 0.0), low=0, high=MAX_TOTAL_LITRES
+        ),
+        # v1 stored energy alongside litres, so it carries straight across
+        # and the sensor does not jump on upgrade.
+        total_kwh=_optional_number(
+            document.get("total_consumption_kwh"), low=0, high=MAX_TOTAL_LITRES * 100
         ),
         # v1 wrote 0.0 for "nothing measured yet", which is indistinguishable
         # from a genuine zero. Treat it as "not measured" so the sensor shows
