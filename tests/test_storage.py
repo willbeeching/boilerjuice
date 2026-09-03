@@ -13,22 +13,25 @@ from custom_components.boilerjuice.storage import (
     LEGACY_STORAGE_KEY,
     LEGACY_STORAGE_VERSION,
     STORAGE_VERSION,
+    AccountState,
     ConsumptionState,
     ConsumptionStore,
     InvalidStoredData,
+    document_from_account,
     document_from_state,
     state_from_document,
 )
 
-from .helpers import make_entry, mock_site, tank_page
+from .helpers import make_entry, mock_site, tank_page, tracker_of
 
 
 def entry_key(entry) -> str:
     return f"{DOMAIN}.{entry.entry_id}"
 
 
-def stored(hass_storage, key: str) -> dict:
-    return hass_storage[key]["data"]
+def stored(hass_storage, key: str, tank_id: str = "123456") -> dict:
+    """Return one tank's sub-document out of an account's document."""
+    return hass_storage[key]["data"]["tanks"][tank_id]
 
 
 def legacy_document(**overrides) -> dict:
@@ -147,8 +150,13 @@ async def test_each_account_writes_its_own_document(
         await two.async_refresh()
         await hass.async_block_till_done()
 
-        assert stored(hass_storage, entry_key(first))["reference_volume"] == 2000
-        assert stored(hass_storage, entry_key(second))["reference_volume"] == 1250
+        assert (
+            stored(hass_storage, entry_key(first), "111111")["reference_volume"] == 2000
+        )
+        assert (
+            stored(hass_storage, entry_key(second), "222222")["reference_volume"]
+            == 1250
+        )
     finally:
         await one.async_close()
         await two.async_close()
@@ -179,8 +187,13 @@ async def test_concurrent_polls_do_not_lose_each_others_writes(
         await asyncio.gather(one.async_refresh(), two.async_refresh())
         await hass.async_block_till_done()
 
-        assert stored(hass_storage, entry_key(first))["reference_volume"] == 2000
-        assert stored(hass_storage, entry_key(second))["reference_volume"] == 1250
+        assert (
+            stored(hass_storage, entry_key(first), "111111")["reference_volume"] == 2000
+        )
+        assert (
+            stored(hass_storage, entry_key(second), "222222")["reference_volume"]
+            == 1250
+        )
     finally:
         await one.async_close()
         await two.async_close()
@@ -192,12 +205,16 @@ async def test_a_restart_resumes_from_the_stored_totals(
     entry = make_entry(hass)
     hass_storage[entry_key(entry)] = {
         "version": STORAGE_VERSION,
-        "data": document_from_state(
-            ConsumptionState(
-                total_litres=340.0,
-                daily_litres=12.0,
-                reference_volume=2000,
-                reference_level=80.0,
+        "data": document_from_account(
+            AccountState(
+                tanks={
+                    "123456": ConsumptionState(
+                        total_litres=340.0,
+                        daily_litres=12.0,
+                        reference_volume=2000,
+                        reference_level=80.0,
+                    )
+                }
             )
         ),
     }
@@ -209,7 +226,7 @@ async def test_a_restart_resumes_from_the_stored_totals(
         await hass.async_block_till_done()
 
         # 340 carried over, plus the 50 L drop seen on this poll.
-        assert coordinator.total_consumption_usable_liters == 390.0
+        assert tracker_of(coordinator).total_litres == 390.0
     finally:
         await coordinator.async_close()
 
@@ -227,14 +244,14 @@ async def test_an_entry_keyed_v1_slot_is_migrated(
     }
     store = ConsumptionStore(hass, entry.entry_id, "123456")
 
-    state, problem = await store.async_load()
+    account, problem = await store.async_load()
 
     assert problem is None
-    assert state.total_litres == 340.0
-    assert state.daily_litres == 12.0
-    assert len(state.history) == 2
+    assert account.unassigned.total_litres == 340.0
+    assert account.unassigned.daily_litres == 12.0
+    assert len(account.unassigned.history) == 2
     assert LEGACY_STORAGE_KEY not in hass_storage
-    assert stored(hass_storage, entry_key(entry))["total_litres"] == 340.0
+    assert hass_storage[entry_key(entry)]["data"]["unassigned"]["total_litres"] == 340.0
 
 
 async def test_a_tank_keyed_v1_slot_is_migrated(
@@ -247,9 +264,9 @@ async def test_a_tank_keyed_v1_slot_is_migrated(
     }
     store = ConsumptionStore(hass, entry.entry_id, "123456")
 
-    state, _ = await store.async_load()
+    account, _ = await store.async_load()
 
-    assert state.total_litres == 340.0
+    assert account.tanks["123456"].total_litres == 340.0
 
 
 async def test_the_v1_default_slot_is_only_claimed_with_a_tank_id(
@@ -263,9 +280,10 @@ async def test_the_v1_default_slot_is_only_claimed_with_a_tank_id(
     }
     store = ConsumptionStore(hass, entry.entry_id, None)
 
-    state, _ = await store.async_load()
+    account, _ = await store.async_load()
 
-    assert state.total_litres == 0.0
+    assert account.tanks == {}
+    assert account.unassigned is None
     assert "default" in hass_storage[LEGACY_STORAGE_KEY]["data"]
 
 
@@ -295,9 +313,9 @@ async def test_a_v1_zero_daily_rate_becomes_unknown_not_zero(
     }
     store = ConsumptionStore(hass, entry.entry_id, "123456")
 
-    state, _ = await store.async_load()
+    account, _ = await store.async_load()
 
-    assert state.daily_litres is None
+    assert account.tanks["123456"].daily_litres is None
 
 
 async def test_an_unusable_v1_slot_is_discarded_and_reported(
@@ -310,9 +328,9 @@ async def test_an_unusable_v1_slot_is_discarded_and_reported(
     }
     store = ConsumptionStore(hass, entry.entry_id, "123456")
 
-    state, problem = await store.async_load()
+    account, problem = await store.async_load()
 
-    assert state.total_litres == 0.0
+    assert account.tanks == {}
     assert problem is not None
 
 
@@ -325,7 +343,7 @@ async def test_a_corrupt_document_starts_fresh_and_raises_a_repair(
     entry = make_entry(hass)
     hass_storage[entry_key(entry)] = {
         "version": STORAGE_VERSION,
-        "data": {"total_litres": "three hundred", "history": []},
+        "data": {"tanks": {"123456": {"total_litres": "three hundred"}}},
     }
     coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
 
@@ -335,7 +353,7 @@ async def test_a_corrupt_document_starts_fresh_and_raises_a_repair(
         await hass.async_block_till_done()
 
         assert coordinator.last_update_success
-        assert coordinator.total_consumption_usable_liters == 0.0
+        assert tracker_of(coordinator).total_litres == 0.0
 
         issue = ir.async_get(hass).async_get_issue(
             DOMAIN, f"invalid_stored_data_{entry.entry_id}"
@@ -399,7 +417,7 @@ async def test_reset_clears_the_stored_document(
         mock_site(aioclient_mock, tank_html=tank_page(percentage=70, litres=1750))
         await coordinator.async_refresh()
         await hass.async_block_till_done()
-        assert coordinator.total_consumption_usable_liters == 250.0
+        assert tracker_of(coordinator).total_litres == 250.0
 
         await coordinator.async_reset_consumption()
 
@@ -428,8 +446,8 @@ async def test_a_manual_daily_rate_survives_the_next_poll_and_a_restart(
         await coordinator.async_refresh()
         await hass.async_block_till_done()
 
-        assert coordinator.daily_consumption_usable_liters == 7.5
-        assert coordinator.daily_consumption_is_manual
+        assert tracker_of(coordinator).daily_litres == 7.5
+        assert tracker_of(coordinator).daily_is_manual
         assert stored(hass_storage, entry_key(entry))["daily_override"] == 7.5
     finally:
         await coordinator.async_close()
@@ -440,7 +458,7 @@ async def test_a_manual_daily_rate_survives_the_next_poll_and_a_restart(
         await restarted.async_refresh()
         await hass.async_block_till_done()
 
-        assert restarted.daily_consumption_usable_liters == 7.5
+        assert tracker_of(restarted).daily_litres == 7.5
     finally:
         await restarted.async_close()
 
@@ -457,7 +475,7 @@ async def test_resetting_clears_a_manual_daily_rate(
         await coordinator.async_set_consumption(100.0, 7.5)
         await coordinator.async_reset_consumption()
 
-        assert coordinator.daily_consumption_usable_liters is None
-        assert not coordinator.daily_consumption_is_manual
+        assert tracker_of(coordinator).daily_litres is None
+        assert not tracker_of(coordinator).daily_is_manual
     finally:
         await coordinator.async_close()

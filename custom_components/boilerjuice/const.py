@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 DOMAIN = "boilerjuice"
 NAME = "BoilerJuice"
 
@@ -11,6 +10,7 @@ CONF_EMAIL = "email"
 CONF_PASSWORD = "password"
 CONF_TANK_ID = "tank_id"
 CONF_KWH_PER_LITRE = "kwh_per_litre"
+CONF_TANKS = "tanks"
 
 # Default Values
 DEFAULT_KWH_PER_LITRE = 10.35  # typical value for heating oil

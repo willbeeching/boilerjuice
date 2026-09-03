@@ -12,7 +12,6 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfVolume
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
@@ -27,6 +26,7 @@ from .const import (
     SENSOR_VOLUME,
 )
 from .coordinator import BoilerJuiceDataUpdateCoordinator
+from .runtime import BoilerJuiceConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,69 +40,82 @@ RETIRED_UNIQUE_ID_SUFFIXES = ("_BoilerJuiceIncrementalConsumptionKwhSensor",)
 
 
 @callback
-def _async_remove_retired_entities(
-    hass: HomeAssistant, coordinator: BoilerJuiceDataUpdateCoordinator
-) -> None:
+def _async_remove_retired_entities(hass: HomeAssistant, tank_id: str) -> None:
     """Drop registry entries for sensors this version no longer creates."""
     registry = er.async_get(hass)
     for suffix in RETIRED_UNIQUE_ID_SUFFIXES:
-        unique_id = f"{coordinator.data['id']}{suffix}"
-        entity_id = registry.async_get_entity_id(SENSOR_DOMAIN, DOMAIN, unique_id)
+        entity_id = registry.async_get_entity_id(
+            SENSOR_DOMAIN, DOMAIN, f"{tank_id}{suffix}"
+        )
         if entity_id is not None:
             _LOGGER.info("Removing the retired %s entity", entity_id)
             registry.async_remove(entity_id)
 
 
+def _entities_for_tank(
+    coordinator: BoilerJuiceDataUpdateCoordinator, tank_id: str
+) -> list[BoilerJuiceSensor]:
+    """Return one full set of sensors for one tank."""
+    return [sensor(coordinator, tank_id) for sensor in SENSOR_TYPES]
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: BoilerJuiceConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up BoilerJuice sensors from a config entry."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]
-    _async_remove_retired_entities(hass, coordinator)
+    """Set up BoilerJuice sensors for every tank on the account."""
+    coordinator = entry.runtime_data.coordinator
 
-    async_add_entities(
-        [
-            # Simplified sensors - BoilerJuice now only provides one oil level (not separate total/usable)
-            BoilerJuiceOilLevelSensor(coordinator, entry.entry_id),
-            BoilerJuiceTankVolumeSensor(coordinator, entry.entry_id),
-            BoilerJuiceTankCapacitySensor(coordinator, entry.entry_id),
-            BoilerJuiceDailyConsumptionSensor(coordinator, entry.entry_id),
-            BoilerJuiceTotalConsumptionSensor(coordinator, entry.entry_id),
-            BoilerJuiceTotalConsumptionKwhSensor(coordinator, entry.entry_id),
-            BoilerJuiceTankHeightSensor(coordinator, entry.entry_id),
-            BoilerJuiceDaysUntilEmptySensor(coordinator, entry.entry_id),
-            BoilerJuiceKwhPerLitreSensor(coordinator, entry.entry_id),
-            BoilerJuiceCostPerKwhSensor(coordinator, entry.entry_id),
-            BoilerJuiceOilPriceSensor(coordinator, entry.entry_id),
-            BoilerJuiceLastUpdateSensor(coordinator, entry.entry_id),
-            BoilerJuiceSeasonalConsumptionSensor(coordinator, entry.entry_id),
-        ]
-    )
+    entities: list[BoilerJuiceSensor] = []
+    for tank_id in coordinator.tank_ids:
+        _async_remove_retired_entities(hass, tank_id)
+        entities.extend(_entities_for_tank(coordinator, tank_id))
+    async_add_entities(entities)
+
+    @callback
+    def _async_add_new_tanks(tank_ids: list[str]) -> None:
+        """Add entities for tanks that appeared after setup."""
+        new_entities: list[BoilerJuiceSensor] = []
+        for tank_id in tank_ids:
+            _async_remove_retired_entities(hass, tank_id)
+            new_entities.extend(_entities_for_tank(coordinator, tank_id))
+        if new_entities:
+            async_add_entities(new_entities)
+
+    coordinator.async_add_new_tank_listener(_async_add_new_tanks)
 
 
 class BoilerJuiceSensor(SensorEntity):
-    """Base class for BoilerJuice sensors."""
+    """Base class for BoilerJuice sensors.
+
+    Each entity belongs to one tank. The unique id keeps the pre-multi-tank
+    shape - "<tank id>_<class name>" - so upgrading an existing single-tank
+    install does not rename a single entity.
+    """
 
     def __init__(
         self,
         coordinator: BoilerJuiceDataUpdateCoordinator,
-        entry_id: str,
+        tank_id: str,
     ) -> None:
         """Initialize the sensor."""
         self._coordinator = coordinator
+        self._tank_id = tank_id
         self._attr_has_entity_name = True
         self._attr_should_poll = False
-        self._attr_unique_id = f"{coordinator.data['id']}_{self.__class__.__name__}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, coordinator.data["id"])},
-        )
+        self._attr_unique_id = f"{tank_id}_{self.__class__.__name__}"
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, tank_id)})
+
+    @property
+    def data(self) -> dict[str, Any] | None:
+        """Return this tank's published reading, if there is one."""
+        return self._coordinator.reading(self._tank_id)
 
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self._coordinator.last_update_success
+        return self._coordinator.last_update_success and self.data is not None
 
     async def async_added_to_hass(self) -> None:
         """When entity is added to hass."""
@@ -130,9 +143,9 @@ class BoilerJuiceTankVolumeSensor(BoilerJuiceSensor):
     @property
     def native_value(self) -> int | None:
         """Return the state of the sensor."""
-        if not self._coordinator.data:
+        if not self.data:
             return None
-        return self._coordinator.data.get("current_volume_litres")
+        return self.data.get("current_volume_litres")
 
 
 class BoilerJuiceTankCapacitySensor(BoilerJuiceSensor):
@@ -146,9 +159,9 @@ class BoilerJuiceTankCapacitySensor(BoilerJuiceSensor):
     @property
     def native_value(self) -> int | None:
         """Return the state of the sensor."""
-        if not self._coordinator.data:
+        if not self.data:
             return None
-        return self._coordinator.data.get("capacity_litres")
+        return self.data.get("capacity_litres")
 
 
 class BoilerJuiceTankHeightSensor(BoilerJuiceSensor):
@@ -162,9 +175,9 @@ class BoilerJuiceTankHeightSensor(BoilerJuiceSensor):
     @property
     def native_value(self) -> int | None:
         """Return the state of the sensor."""
-        if not self._coordinator.data:
+        if not self.data:
             return None
-        return self._coordinator.data.get("height_cm")
+        return self.data.get("height_cm")
 
 
 class BoilerJuiceDailyConsumptionSensor(BoilerJuiceSensor):
@@ -181,21 +194,19 @@ class BoilerJuiceDailyConsumptionSensor(BoilerJuiceSensor):
         Unknown rather than 0.0: "no complete day has been seen yet" and
         "this tank burns no oil" are different answers.
         """
-        if not self._coordinator.data:
+        if not self.data:
             return None
-        value = self._coordinator.data.get("daily_consumption_usable_liters")
+        value = self.data.get("daily_consumption_usable_liters")
         return round(value, 1) if value is not None else None
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         """Say how much evidence is behind the rate."""
-        if not self._coordinator.data:
+        if not self.data:
             return {}
         return {
-            "sample_days": self._coordinator.data.get("consumption_sample_days", 0),
-            "manually_set": self._coordinator.data.get(
-                "daily_consumption_is_manual", False
-            ),
+            "sample_days": self.data.get("consumption_sample_days", 0),
+            "manually_set": self.data.get("daily_consumption_is_manual", False),
         }
 
 
@@ -210,9 +221,9 @@ class BoilerJuiceTotalConsumptionSensor(BoilerJuiceSensor):
     @property
     def native_value(self) -> float | None:
         """Return the state of the sensor."""
-        if not self._coordinator.data:
+        if not self.data:
             return None
-        value = self._coordinator.data.get("total_consumption_usable_liters")
+        value = self.data.get("total_consumption_usable_liters")
         return round(value, 1) if value is not None else None
 
 
@@ -227,9 +238,9 @@ class BoilerJuiceTotalConsumptionKwhSensor(BoilerJuiceSensor):
     @property
     def native_value(self) -> float | None:
         """Return the state of the sensor."""
-        if not self._coordinator.data:
+        if not self.data:
             return None
-        value = self._coordinator.data.get("total_consumption_usable_kwh")
+        value = self.data.get("total_consumption_usable_kwh")
         return round(value, 1) if value is not None else None
 
 
@@ -250,10 +261,10 @@ class BoilerJuiceDaysUntilEmptySensor(BoilerJuiceSensor):
         fresh install with no consumption history it estimated against 510 L
         no matter the real tank size.
         """
-        if not self._coordinator.data:
+        if not self.data:
             return None
 
-        return self._coordinator.data.get("days_until_empty")
+        return self.data.get("days_until_empty")
 
 
 class BoilerJuiceOilLevelSensor(BoilerJuiceSensor):
@@ -272,10 +283,10 @@ class BoilerJuiceOilLevelSensor(BoilerJuiceSensor):
     @property
     def native_value(self) -> float | None:
         """Return the state of the sensor."""
-        if not self._coordinator.data:
+        if not self.data:
             return None
         # BoilerJuice now provides one level called "total oil remaining"
-        return self._coordinator.data.get("total_level_percentage")
+        return self.data.get("total_level_percentage")
 
 
 class BoilerJuiceOilPriceSensor(BoilerJuiceSensor):
@@ -288,9 +299,9 @@ class BoilerJuiceOilPriceSensor(BoilerJuiceSensor):
     @property
     def native_value(self) -> float | None:
         """Return the current oil price in GBP per litre."""
-        if not self._coordinator.data:
+        if not self.data:
             return None
-        price_pence = self._coordinator.data.get("current_price_pence")
+        price_pence = self.data.get("current_price_pence")
         if price_pence is None:
             return None
         return round(price_pence / 100, 2)  # Convert pence to pounds
@@ -298,11 +309,11 @@ class BoilerJuiceOilPriceSensor(BoilerJuiceSensor):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the state attributes."""
-        if not self._coordinator.data:
+        if not self.data:
             return {}
         return {
-            "price_pence_per_litre": self._coordinator.data.get("current_price_pence"),
-            "last_updated": self._coordinator.data.get("price_last_updated"),
+            "price_pence_per_litre": self.data.get("current_price_pence"),
+            "last_updated": self.data.get("price_last_updated"),
         }
 
 
@@ -317,9 +328,9 @@ class BoilerJuiceKwhPerLitreSensor(BoilerJuiceSensor):
     @property
     def native_value(self) -> float | None:
         """Return the kWh per litre conversion factor."""
-        if not self._coordinator.data:
+        if not self.data:
             return None
-        return self._coordinator.data.get("kwh_per_litre", DEFAULT_KWH_PER_LITRE)
+        return self.data.get("kwh_per_litre", DEFAULT_KWH_PER_LITRE)
 
 
 class BoilerJuiceCostPerKwhSensor(BoilerJuiceSensor):
@@ -332,11 +343,11 @@ class BoilerJuiceCostPerKwhSensor(BoilerJuiceSensor):
     @property
     def native_value(self) -> float | None:
         """Return the cost per kWh."""
-        if not self._coordinator.data:
+        if not self.data:
             return None
 
-        oil_price = self._coordinator.data.get("current_price_pence")
-        kwh_per_litre = self._coordinator.data.get("kwh_per_litre")
+        oil_price = self.data.get("current_price_pence")
+        kwh_per_litre = self.data.get("kwh_per_litre")
 
         if oil_price is None or kwh_per_litre is None or kwh_per_litre == 0:
             return None
@@ -354,8 +365,11 @@ class BoilerJuiceLastUpdateSensor(BoilerJuiceSensor):
 
     @property
     def native_value(self) -> datetime | None:
-        """Return when the tank level was last seen to change."""
-        return self._coordinator.last_level_change
+        """Return when this tank's level was last seen to change."""
+        if not self.data:
+            return None
+        tracker = self._coordinator.tracker(self._tank_id)
+        return tracker.last_level_change if tracker else None
 
 
 class BoilerJuiceSeasonalConsumptionSensor(BoilerJuiceSensor):
@@ -368,19 +382,19 @@ class BoilerJuiceSeasonalConsumptionSensor(BoilerJuiceSensor):
     @property
     def native_value(self) -> float | None:
         """Return the current season's average daily consumption."""
-        if not self._coordinator.data:
+        if not self.data:
             return None
-        seasonal_stats = self._coordinator.data.get("seasonal_stats", {})
+        seasonal_stats = self.data.get("seasonal_stats", {})
         current_season = seasonal_stats.get("current_season", {})
         return current_season.get("avg")
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         """Return seasonal consumption statistics."""
-        if not self._coordinator.data:
+        if not self.data:
             return {}
 
-        seasonal_stats = self._coordinator.data.get("seasonal_stats", {})
+        seasonal_stats = self.data.get("seasonal_stats", {})
         if not seasonal_stats:
             return {}
 
@@ -403,3 +417,22 @@ class BoilerJuiceSeasonalConsumptionSensor(BoilerJuiceSensor):
             attributes["monthly_averages"] = monthly
 
         return attributes
+
+
+# One full set of these is created per tank. Order sets nothing but the order
+# entities appear in during setup.
+SENSOR_TYPES: tuple[type[BoilerJuiceSensor], ...] = (
+    BoilerJuiceOilLevelSensor,
+    BoilerJuiceTankVolumeSensor,
+    BoilerJuiceTankCapacitySensor,
+    BoilerJuiceDailyConsumptionSensor,
+    BoilerJuiceTotalConsumptionSensor,
+    BoilerJuiceTotalConsumptionKwhSensor,
+    BoilerJuiceTankHeightSensor,
+    BoilerJuiceDaysUntilEmptySensor,
+    BoilerJuiceKwhPerLitreSensor,
+    BoilerJuiceCostPerKwhSensor,
+    BoilerJuiceOilPriceSensor,
+    BoilerJuiceLastUpdateSensor,
+    BoilerJuiceSeasonalConsumptionSensor,
+)

@@ -88,18 +88,37 @@ async def setup_account(
     aioclient_mock: AiohttpClientMocker,
     *,
     email: str = "someone@example.com",
-    tank_id: str = TANK_ID,
+    tank_id: str | None = TANK_ID,
     litres: int = 2000,
     percentage: float = 80,
 ) -> MockConfigEntry:
-    """Set up one fully-loaded BoilerJuice account."""
+    """Set up one fully-loaded BoilerJuice account.
+
+    `tank_id=None` leaves the entry unpinned, so it discovers its tanks from
+    the listing page like a fresh install does.
+    """
     mock_site(
         aioclient_mock,
         tank_html=tank_page(percentage=percentage, litres=litres),
-        tank_id=tank_id,
+        tank_id=tank_id or TANK_ID,
         clear=False,
     )
     entry = make_entry(hass, email=email, tank_id=tank_id)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     return entry
+
+
+def coordinator_of(entry) -> "BoilerJuiceDataUpdateCoordinator":  # noqa: F821
+    """Return a loaded entry's coordinator."""
+    return entry.runtime_data.coordinator
+
+
+def tracker_of(coordinator, tank_id: str = TANK_ID):
+    """Return one tank's consumption tracker."""
+    return coordinator.tracker(tank_id)
+
+
+def reading_of(coordinator, tank_id: str = TANK_ID) -> dict:
+    """Return one tank's published reading."""
+    return coordinator.data[tank_id]

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
@@ -22,7 +23,6 @@ from custom_components.boilerjuice.const import (
     TANKS_URL,
 )
 from custom_components.boilerjuice.coordinator import BoilerJuiceDataUpdateCoordinator
-from custom_components.boilerjuice.errors import BoilerJuiceAuthError
 
 from .helpers import (
     SIGNED_IN_PAGE,
@@ -30,7 +30,9 @@ from .helpers import (
     load_fixture,
     make_entry,
     mock_site,
+    reading_of,
     tank_page,
+    tracker_of,
 )
 
 
@@ -66,9 +68,9 @@ async def test_first_poll_sets_a_baseline_without_booking_consumption(
     await settle(hass)
 
     assert coordinator.last_update_success
-    assert coordinator.total_consumption_usable_liters == 0.0
-    assert coordinator.data["usable_volume_litres"] == 2000
-    assert coordinator.data["total_level_percentage"] == 80
+    assert tracker_of(coordinator).total_litres == 0.0
+    assert reading_of(coordinator)["usable_volume_litres"] == 2000
+    assert reading_of(coordinator)["total_level_percentage"] == 80
 
 
 async def test_ordinary_consumption_is_recorded_from_the_volume_drop(
@@ -84,7 +86,7 @@ async def test_ordinary_consumption_is_recorded_from_the_volume_drop(
     await coordinator.async_refresh()
     await settle(hass)
 
-    assert coordinator.total_consumption_usable_liters == 25.0
+    assert tracker_of(coordinator).total_litres == 25.0
 
 
 async def test_a_refill_is_not_recorded_as_consumption(
@@ -100,7 +102,7 @@ async def test_a_refill_is_not_recorded_as_consumption(
     await coordinator.async_refresh()
     await settle(hass)
 
-    assert coordinator.total_consumption_usable_liters == 0.0
+    assert tracker_of(coordinator).total_litres == 0.0
 
 
 async def test_an_unchanged_reading_records_nothing(
@@ -114,7 +116,7 @@ async def test_an_unchanged_reading_records_nothing(
     await coordinator.async_refresh()
     await settle(hass)
 
-    assert coordinator.total_consumption_usable_liters == 0.0
+    assert tracker_of(coordinator).total_litres == 0.0
 
 
 @pytest.mark.parametrize(
@@ -146,9 +148,9 @@ async def test_an_unreadable_page_cannot_move_consumption(
     await settle(hass)
 
     assert not coordinator.last_update_success
-    assert coordinator.total_consumption_usable_liters == 0.0
-    assert coordinator.total_consumption_usable_kwh == 0.0
-    assert coordinator.daily_consumption_usable_liters is None
+    assert tracker_of(coordinator).total_litres == 0.0
+    assert tracker_of(coordinator).total_kwh(coordinator.kwh_per_litre) == 0.0
+    assert tracker_of(coordinator).daily_litres is None
     # The last good reading is still what consumers see.
     assert coordinator.data == good_data
 
@@ -164,8 +166,8 @@ async def test_a_session_that_expired_mid_poll_is_an_auth_failure(
     await settle(hass)
 
     assert not coordinator.last_update_success
-    assert isinstance(coordinator.last_exception, BoilerJuiceAuthError)
-    assert coordinator.total_consumption_usable_liters == 0.0
+    assert isinstance(coordinator.last_exception, ConfigEntryAuthFailed)
+    assert coordinator.tracker(TANK_ID) is None
 
 
 async def test_rejected_credentials_are_an_auth_failure(
@@ -182,7 +184,7 @@ async def test_rejected_credentials_are_an_auth_failure(
     await coordinator.async_refresh()
 
     assert not coordinator.last_update_success
-    assert isinstance(coordinator.last_exception, BoilerJuiceAuthError)
+    assert isinstance(coordinator.last_exception, ConfigEntryAuthFailed)
 
 
 async def test_a_page_with_a_level_but_no_volume_keeps_the_volume_reference(
@@ -204,13 +206,13 @@ async def test_a_page_with_a_level_but_no_volume_keeps_the_volume_reference(
     await settle(hass)
 
     assert coordinator.last_update_success
-    assert coordinator.total_consumption_usable_liters == 0.0
+    assert tracker_of(coordinator).total_litres == 0.0
 
     mock_site(aioclient_mock, tank_html=tank_page(percentage=79, litres=1980))
     await coordinator.async_refresh()
     await settle(hass)
 
-    assert coordinator.total_consumption_usable_liters == 20.0
+    assert tracker_of(coordinator).total_litres == 20.0
 
 
 async def test_kwh_follows_the_configured_energy_content(
@@ -240,10 +242,10 @@ async def test_kwh_follows_the_configured_energy_content(
         await made.async_refresh()
         await settle(hass)
 
-        assert made.total_consumption_usable_liters == 100.0
-        assert made.total_consumption_usable_kwh == pytest.approx(960.0)
-        assert made.data["total_consumption_usable_kwh"] == pytest.approx(960.0)
-        assert made.data["kwh_per_litre"] == 9.6
+        assert tracker_of(made).total_litres == 100.0
+        assert tracker_of(made).total_kwh(made.kwh_per_litre) == pytest.approx(960.0)
+        assert reading_of(made)["total_consumption_usable_kwh"] == pytest.approx(960.0)
+        assert reading_of(made)["kwh_per_litre"] == 9.6
     finally:
         await made.async_close()
 
@@ -256,7 +258,7 @@ async def test_a_failed_price_request_keeps_the_last_good_price(
     mock_site(aioclient_mock, tank_html=tank_page(percentage=80, litres=2000))
     await coordinator.async_refresh()
     await settle(hass)
-    assert coordinator.data["current_price_pence"] == 62.45
+    assert reading_of(coordinator)["current_price_pence"] == 62.45
 
     mock_site(
         aioclient_mock, tank_html=tank_page(percentage=80, litres=2000), price_html=None
@@ -265,8 +267,8 @@ async def test_a_failed_price_request_keeps_the_last_good_price(
     await settle(hass)
 
     assert coordinator.last_update_success
-    assert coordinator.data["current_price_pence"] == 62.45
-    assert "price_last_updated" in coordinator.data
+    assert reading_of(coordinator)["current_price_pence"] == 62.45
+    assert "price_last_updated" in reading_of(coordinator)
 
 
 async def test_an_account_with_no_tanks_fails_the_update(
@@ -315,6 +317,6 @@ async def test_a_non_numeric_configured_tank_id_is_ignored(
         await settle(hass)
 
         assert made.last_update_success
-        assert made.data["id"] == TANK_ID
+        assert reading_of(made)["id"] == TANK_ID
     finally:
         await made.async_close()

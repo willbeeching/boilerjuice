@@ -5,9 +5,16 @@ from __future__ import annotations
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
-from custom_components.boilerjuice.const import DOMAIN
-
-from .helpers import load_fixture, mock_site, setup_account, tank_page
+from .helpers import (
+    TANK_ID,
+    coordinator_of,
+    load_fixture,
+    mock_site,
+    reading_of,
+    setup_account,
+    tank_page,
+    tracker_of,
+)
 
 
 async def test_the_full_set_of_sensors_is_created(
@@ -71,7 +78,7 @@ async def test_sensors_go_unavailable_when_the_page_stops_parsing(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
     entry = await setup_account(hass, aioclient_mock)
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = coordinator_of(entry)
 
     mock_site(aioclient_mock, tank_html=load_fixture("tank_redesigned.html"))
     await coordinator.async_refresh()
@@ -89,7 +96,7 @@ async def test_the_seasonal_sensor_exposes_its_breakdown(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
     entry = await setup_account(hass, aioclient_mock)
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = coordinator_of(entry)
 
     mock_site(aioclient_mock, tank_html=tank_page(percentage=70, litres=1750))
     await coordinator.async_refresh()
@@ -113,7 +120,7 @@ async def test_the_last_update_sensor_reports_when_the_level_last_moved(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
     entry = await setup_account(hass, aioclient_mock)
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = coordinator_of(entry)
 
     last_update = next(
         state
@@ -121,7 +128,7 @@ async def test_the_last_update_sensor_reports_when_the_level_last_moved(
         if state.entity_id.endswith("_last_updated")
     )
     assert last_update.state != "unknown"
-    assert coordinator.last_level_change is not None
+    assert tracker_of(coordinator).last_level_change is not None
 
 
 async def test_every_sensor_reports_unknown_when_there_is_no_reading(
@@ -131,10 +138,10 @@ async def test_every_sensor_reports_unknown_when_there_is_no_reading(
     from custom_components.boilerjuice import sensor as sensor_module
 
     entry = await setup_account(hass, aioclient_mock)
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = coordinator_of(entry)
 
     entities = [
-        cls(coordinator, entry.entry_id)
+        cls(coordinator, TANK_ID)
         for cls in vars(sensor_module).values()
         if isinstance(cls, type)
         and issubclass(cls, sensor_module.BoilerJuiceSensor)
@@ -143,7 +150,6 @@ async def test_every_sensor_reports_unknown_when_there_is_no_reading(
     assert len(entities) == 13
 
     coordinator.data = None
-    coordinator._state.last_update = None
 
     for entity in entities:
         entity.hass = hass
@@ -157,12 +163,12 @@ async def test_asking_a_sensor_to_update_refreshes_the_coordinator(
     from custom_components.boilerjuice.sensor import BoilerJuiceOilLevelSensor
 
     entry = await setup_account(hass, aioclient_mock)
-    coordinator = hass.data[DOMAIN][entry.entry_id]
-    entity = BoilerJuiceOilLevelSensor(coordinator, entry.entry_id)
+    coordinator = coordinator_of(entry)
+    entity = BoilerJuiceOilLevelSensor(coordinator, TANK_ID)
     entity.hass = hass
 
     mock_site(aioclient_mock, tank_html=tank_page(percentage=60, litres=1500))
     await entity.async_update()
     await hass.async_block_till_done()
 
-    assert coordinator.data["total_level_percentage"] == 60
+    assert reading_of(coordinator)["total_level_percentage"] == 60

@@ -145,7 +145,7 @@ def _history(value: Any) -> DatedHistory:
 
 
 def state_from_document(document: Any) -> ConsumptionState:
-    """Return the state a stored document describes, or raise."""
+    """Return the tank state a stored sub-document describes, or raise."""
     if not isinstance(document, dict):
         raise InvalidStoredData("the stored document is not an object")
 
@@ -224,6 +224,62 @@ def state_from_legacy_document(document: Any) -> ConsumptionState:
     )
 
 
+@dataclass(slots=True)
+class AccountState:
+    """Everything one account's document holds."""
+
+    tanks: dict[str, ConsumptionState] = field(default_factory=dict)
+    # How many consecutive authoritative tank listings have not mentioned a
+    # tank we know about. A failed listing never counts, so an outage cannot
+    # remove anybody's devices.
+    missing: dict[str, int] = field(default_factory=dict)
+    # A v1 document we adopted but could not attribute to a tank, because v1
+    # never recorded which tank it belonged to. It is claimed on the first
+    # poll that finds exactly one tank, and dropped otherwise.
+    unassigned: ConsumptionState | None = None
+
+
+def account_from_document(document: Any) -> AccountState:
+    """Return the account state a stored document describes, or raise."""
+    if not isinstance(document, dict):
+        raise InvalidStoredData("the stored document is not an object")
+
+    tanks = document.get("tanks", {})
+    if not isinstance(tanks, dict):
+        raise InvalidStoredData("tanks must be an object")
+
+    missing = document.get("missing", {})
+    if not isinstance(missing, dict):
+        raise InvalidStoredData("missing must be an object")
+
+    unassigned = document.get("unassigned")
+
+    return AccountState(
+        tanks={tank_id: state_from_document(sub) for tank_id, sub in tanks.items()},
+        missing={
+            tank_id: int(_number(count, low=0, high=MAX_HISTORY_ROWS))
+            for tank_id, count in missing.items()
+        },
+        unassigned=None if unassigned is None else state_from_document(unassigned),
+    )
+
+
+def document_from_account(account: AccountState) -> dict[str, Any]:
+    """Return the document to persist for `account`."""
+    return {
+        "tanks": {
+            tank_id: document_from_state(state)
+            for tank_id, state in account.tanks.items()
+        },
+        "missing": dict(account.missing),
+        "unassigned": (
+            None
+            if account.unassigned is None
+            else document_from_state(account.unassigned)
+        ),
+    }
+
+
 class ConsumptionStore:
     """One config entry's consumption document."""
 
@@ -244,7 +300,7 @@ class ConsumptionStore:
         """Return this entry's storage key."""
         return f"{DOMAIN}.{self._entry_id}"
 
-    async def async_load(self) -> tuple[ConsumptionState, str | None]:
+    async def async_load(self) -> tuple[AccountState, str | None]:
         """Return the stored state, plus a reason if it had to be discarded.
 
         A None reason means the state is either freshly loaded or a clean
@@ -254,26 +310,40 @@ class ConsumptionStore:
 
         if document is not None:
             try:
-                return state_from_document(document), None
+                return account_from_document(document), None
             except InvalidStoredData as err:
                 _LOGGER.warning(
                     "Discarding unusable stored BoilerJuice consumption data "
                     "for this account: %s",
                     err,
                 )
-                return ConsumptionState(), str(err)
+                return AccountState(), str(err)
 
         migrated = await self._async_migrate_from_legacy()
         if migrated is not None:
-            state, reason = migrated
-            await self.async_save(state)
-            return state, reason
+            account, reason = migrated
+            await self.async_save(account)
+            return account, reason
 
-        return ConsumptionState(), None
+        return AccountState(), None
+
+    def _slot_in(self, shared: dict) -> str | None:
+        """Return the key in the shared v1 document that belongs to us."""
+        if self._entry_id in shared:
+            return self._entry_id
+        if self._tank_id and self._tank_id in shared:
+            return self._tank_id
+        if self._tank_id and shared.get("default"):
+            # Only claim the shared "default" bucket when a tank id makes it
+            # unambiguous. With several untagged accounts it could belong to
+            # any of them, so it is left for whichever entry can prove
+            # ownership.
+            return "default"
+        return None
 
     async def _async_migrate_from_legacy(
         self,
-    ) -> tuple[ConsumptionState, str | None] | None:
+    ) -> tuple[AccountState, str | None] | None:
         """Adopt this entry's slot out of the shared v1 document."""
         lock = self._hass.data.setdefault(LEGACY_MIGRATION_LOCK, asyncio.Lock())
 
@@ -282,29 +352,34 @@ class ConsumptionStore:
             if not shared:
                 return None
 
-            slot = None
-            if self._entry_id in shared:
-                slot = self._entry_id
-            elif self._tank_id and self._tank_id in shared:
-                slot = self._tank_id
-            elif self._tank_id and shared.get("default"):
-                # Only claim the shared "default" bucket when a tank id makes
-                # it unambiguous. With several untagged accounts it could
-                # belong to any of them, so it is left for whichever entry can
-                # prove ownership.
-                slot = "default"
-
+            slot = self._slot_in(shared)
             if slot is None:
                 return None
 
+            reason = None
             try:
                 state = state_from_legacy_document(shared[slot])
-                reason = None
             except InvalidStoredData as err:
                 _LOGGER.warning(
                     "Discarding unusable legacy BoilerJuice consumption data: %s", err
                 )
                 state, reason = ConsumptionState(), str(err)
+
+            # v1 recorded no tank id unless the slot was keyed by one, so an
+            # entry-keyed or "default" slot has to wait for the first poll to
+            # learn which tank it describes.
+            known_tank = self._tank_id if slot != self._entry_id else None
+            if slot.isdigit():
+                known_tank = slot
+
+            account = AccountState()
+            if reason is not None:
+                # Nothing worth carrying across; the entry starts fresh.
+                pass
+            elif known_tank:
+                account.tanks[known_tank] = state
+            else:
+                account.unassigned = state
 
             _LOGGER.info(
                 "Migrated BoilerJuice consumption history out of the shared "
@@ -317,11 +392,11 @@ class ConsumptionStore:
             else:
                 await self._legacy.async_remove()
 
-            return state, reason
+            return account, reason
 
-    async def async_save(self, state: ConsumptionState) -> None:
-        """Write `state`, replacing whatever was there."""
-        await self._store.async_save(document_from_state(state))
+    async def async_save(self, account: AccountState) -> None:
+        """Write `account`, replacing whatever was there."""
+        await self._store.async_save(document_from_account(account))
 
     async def async_remove(self) -> None:
         """Delete this entry's document (called when the entry is removed)."""

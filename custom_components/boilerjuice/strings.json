@@ -2,24 +2,41 @@
   "config": {
     "step": {
       "user": {
+        "title": "BoilerJuice account",
+        "description": "Sign in with your BoilerJuice account. Every tank on the account is added; you can narrow that down afterwards under Reconfigure.",
         "data": {
           "email": "Email",
           "password": "Password",
-          "tank_id": "Tank ID (optional)",
           "kwh_per_litre": "Energy content (kWh per litre)"
-        },
-        "description": "Please enter your BoilerJuice credentials.",
-        "title": "BoilerJuice Account"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Sign in to BoilerJuice again",
+        "description": "BoilerJuice is no longer accepting the stored password for {email}.",
+        "data": {
+          "password": "Password"
+        }
+      },
+      "reconfigure": {
+        "title": "BoilerJuice settings",
+        "description": "Leave the password blank to keep the current one.",
+        "data": {
+          "password": "New password",
+          "kwh_per_litre": "Energy content (kWh per litre)",
+          "tanks": "Tanks to track"
+        }
       }
     },
     "error": {
       "cannot_connect": "Failed to connect",
       "invalid_auth": "Invalid authentication",
-      "unknown": "Unexpected error",
-      "invalid_tank_id": "The tank ID must be the number from your BoilerJuice tank URL"
+      "no_tanks": "That BoilerJuice account has no tanks set up",
+      "unknown": "Unexpected error"
     },
     "abort": {
-      "already_configured": "Account is already configured"
+      "already_configured": "That BoilerJuice account is already configured",
+      "reauth_successful": "BoilerJuice has been reconnected",
+      "reconfigure_successful": "The BoilerJuice settings have been updated"
     }
   },
   "services": {

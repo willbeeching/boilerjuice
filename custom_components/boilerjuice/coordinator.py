@@ -1,9 +1,9 @@
-"""Data update coordinator for BoilerJuice.
+"""Data update coordinator for one BoilerJuice account.
 
-Orchestration only: fetch through the client, decide what the reading means
-with the consumption engine, publish, persist. Parsing lives in parser.py,
-HTTP in client.py, the maths in consumption.py and the durable state in
-storage.py.
+Orchestration only. One config entry is one account; every tank on it is
+tracked separately and published under its own key. Parsing lives in
+parser.py, HTTP in client.py, the maths in consumption.py, per-tank
+bookkeeping in tank.py and the durable state in storage.py.
 """
 
 from __future__ import annotations
@@ -11,11 +11,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Union
+from typing import Any, Callable, Union
 
 import aiohttp
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -28,25 +30,35 @@ from .const import (
     CONF_KWH_PER_LITRE,
     CONF_PASSWORD,
     CONF_TANK_ID,
+    CONF_TANKS,
     DEFAULT_KWH_PER_LITRE,
     DOMAIN,
 )
+from .errors import BoilerJuiceAuthError
 from .models import TankReading
-from .parser import finite, percentage, validate_tank_id, volume_litres
-from .storage import ConsumptionState, ConsumptionStore
+from .parser import finite, validate_tank_id
+from .storage import AccountState, ConsumptionState, ConsumptionStore
+from .tank import TankTracker
 
 _LOGGER = logging.getLogger(__name__)
 
 # Update every hour to allow smooth accumulation of energy consumption.
 SCAN_INTERVAL = timedelta(hours=1)
 
+# How many consecutive authoritative listings must omit a tank before its
+# device is removed. A listing that failed is not authoritative and never
+# counts, so an outage cannot delete anybody's devices.
+MISSING_LISTINGS_BEFORE_REMOVAL = 3
+
 # Re-exported so the rest of the integration has one import site for these.
 CONSUMPTION_ROLLING_DAYS = consumption.CONSUMPTION_ROLLING_DAYS
 SEASONAL_HISTORY_DAYS = consumption.SEASONAL_HISTORY_DAYS
 
 
-class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
-    """Fetch BoilerJuice data and maintain the consumption history."""
+class BoilerJuiceDataUpdateCoordinator(
+    DataUpdateCoordinator[dict[str, dict[str, Any]]]
+):
+    """Fetch one account's tanks and maintain their consumption history."""
 
     def __init__(
         self, hass: HomeAssistant, config: Union[ConfigEntry, dict[str, Any]]
@@ -55,29 +67,30 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=SCAN_INTERVAL)
         self._config = config
 
-        self._state = ConsumptionState()
-        self._sample_days = 0
+        self._account = AccountState()
+        self._trackers: dict[str, TankTracker] = {}
         self._kwh_per_litre = self._validated_kwh_per_litre()
 
-        # The oil price comes from a separate, optional request. Keep the last
-        # good value so one failed fetch does not blank the price sensors.
+        # The oil price is account-wide and comes from a separate, optional
+        # request. Keep the last good value so one failed fetch does not blank
+        # the price sensors.
         self._last_price_pence: float | None = None
         self._last_price_updated: datetime | None = None
 
         self._entry_id: str | None = (
             config.entry_id if isinstance(config, ConfigEntry) else None
         )
-        self._tank_id = validate_tank_id(self._config_value(CONF_TANK_ID))
-        if self._tank_id is None and self._config_value(CONF_TANK_ID):
+        self._pinned_tank_id = validate_tank_id(self._config_value(CONF_TANK_ID))
+        if self._pinned_tank_id is None and self._config_value(CONF_TANK_ID):
             _LOGGER.warning(
                 "Ignoring the configured BoilerJuice tank id because it is not "
-                "numeric; the first tank on the account will be used instead"
+                "numeric; every tank on the account will be tracked instead"
             )
 
         # Coordinators built outside a config entry (the config flow's
         # validation path) never persist anything.
         self._store = (
-            ConsumptionStore(hass, self._entry_id, self._tank_id)
+            ConsumptionStore(hass, self._entry_id, self._pinned_tank_id)
             if self._entry_id
             else None
         )
@@ -88,6 +101,7 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         # overwritten by the poll's own save.
         self._lock = asyncio.Lock()
         self._loaded = False
+        self._new_tank_listeners: list[Callable[[list[str]], None]] = []
 
         self._client = BoilerJuiceClient(
             self._create_session,
@@ -110,10 +124,13 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
     def _config_value(self, key: str, *, required: bool = False, default: Any = None):
-        """Read a value from either a ConfigEntry or a plain dict."""
-        data = (
-            self._config.data if isinstance(self._config, ConfigEntry) else self._config
-        )
+        """Read a value from the entry's options, then its data."""
+        if isinstance(self._config, ConfigEntry):
+            if key in self._config.options:
+                return self._config.options[key]
+            data = self._config.data
+        else:
+            data = self._config
         return data[key] if required else data.get(key, default)
 
     def _validated_kwh_per_litre(self) -> float:
@@ -129,53 +146,30 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             return DEFAULT_KWH_PER_LITRE
         return configured
 
-    # ------------------------------------------------------------------
-    # Published state
-    # ------------------------------------------------------------------
-
     @property
     def kwh_per_litre(self) -> float:
         """Return the configured energy content of a litre of oil."""
         return self._kwh_per_litre
 
     @property
-    def total_consumption_usable_liters(self) -> float:
-        """Return the total oil consumption in liters."""
-        return self._state.total_litres
+    def tank_ids(self) -> list[str]:
+        """Return the tanks this account currently publishes."""
+        return list(self._trackers)
 
-    @property
-    def total_consumption_usable_kwh(self) -> float:
-        """Return the total oil consumption in kWh.
+    def tracker(self, tank_id: str) -> TankTracker | None:
+        """Return the tracker for `tank_id`, if it is still known."""
+        return self._trackers.get(tank_id)
 
-        Always derived from litres, never stored independently, so it cannot
-        drift from the litre total or from the configured energy content.
-        """
-        return self._state.total_litres * self._kwh_per_litre
+    def reading(self, tank_id: str) -> dict[str, Any] | None:
+        """Return the published state for `tank_id`, if there is one."""
+        return (self.data or {}).get(tank_id)
 
-    @property
-    def daily_consumption_usable_liters(self) -> float | None:
-        """Return the daily rate, or None when nothing has been measured.
-
-        None rather than 0.0: "we have not seen a full day yet" and "this
-        tank burns no oil" are different answers, and only one of them should
-        drive a days-until-empty estimate.
-        """
-        return self._state.effective_daily_litres
-
-    @property
-    def consumption_sample_days(self) -> int:
-        """Return how many complete days the daily rate averages."""
-        return 0 if self._state.daily_override is not None else self._sample_days
-
-    @property
-    def daily_consumption_is_manual(self) -> bool:
-        """Whether the published daily rate is a manual override."""
-        return self._state.daily_override is not None
-
-    @property
-    def last_level_change(self) -> datetime | None:
-        """Return when the tank level was last seen to change."""
-        return self._state.last_update
+    @callback
+    def async_add_new_tank_listener(
+        self, listener: Callable[[list[str]], None]
+    ) -> None:
+        """Register a callback for tanks discovered after setup."""
+        self._new_tank_listeners.append(listener)
 
     # ------------------------------------------------------------------
     # Loading
@@ -188,6 +182,19 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             tzinfo=dt_util.DEFAULT_TIME_ZONE
         )
 
+    def _tracker_for(self, tank_id: str) -> TankTracker:
+        """Return (creating if needed) the tracker for `tank_id`."""
+        tracker = self._trackers.get(tank_id)
+        if tracker is None:
+            state = self._account.tanks.get(tank_id)
+            if state is None:
+                state = ConsumptionState()
+                self._account.tanks[tank_id] = state
+            tracker = TankTracker(tank_id, state, midnight=self._local_midnight)
+            tracker.refresh_sample_count(dt_util.now())
+            self._trackers[tank_id] = tracker
+        return tracker
+
     async def _async_load(self) -> None:
         """Load the stored state once, reporting anything unusable."""
         if self._loaded:
@@ -197,13 +204,10 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         if self._store is None:
             return
 
-        state, problem = await self._store.async_load()
-        self._state = state
-        self._sample_days = len(
-            consumption.rolling_window(
-                consumption.daily_totals(state.history), dt_util.now()
-            )
-        )
+        account, problem = await self._store.async_load()
+        self._account = account
+        for tank_id in list(account.tanks):
+            self._tracker_for(tank_id)
 
         if problem is None:
             ir.async_delete_issue(self.hass, DOMAIN, self._storage_issue_id)
@@ -229,7 +233,7 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_persist(self) -> None:
         """Write the current state. Callers hold the lock."""
         if self._store is not None:
-            await self._store.async_save(self._state)
+            await self._store.async_save(self._account)
 
     # ------------------------------------------------------------------
     # Public operations
@@ -240,20 +244,24 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         await self._client.async_close()
 
     async def async_remove_storage(self) -> None:
-        """Delete this entry's stored history (call when the entry is removed)."""
+        """Delete this account's stored history (call when it is removed)."""
         if self._store is not None:
             await self._store.async_remove()
         ir.async_delete_issue(self.hass, DOMAIN, self._storage_issue_id)
 
-    async def async_reset_consumption(self) -> None:
-        """Reset the counters, references and history, and persist that."""
+    async def async_reset_consumption(self, tank_id: str | None = None) -> None:
+        """Reset one tank, or every tank on the account."""
         async with self._lock:
-            self._state = self._state.cleared()
-            self._sample_days = 0
+            for tracker in self._selected_trackers(tank_id):
+                tracker.reset()
+                self._account.tanks[tracker.tank_id] = tracker.state
             await self._async_persist()
 
     async def async_set_consumption(
-        self, total_litres: float, daily_litres: float | None = None
+        self,
+        total_litres: float,
+        daily_litres: float | None = None,
+        tank_id: str | None = None,
     ) -> None:
         """Set the totals by hand and rebase the references on the last reading.
 
@@ -262,14 +270,19 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         recomputed away by the next update.
         """
         async with self._lock:
-            self._state.total_litres = total_litres
-            if daily_litres is not None:
-                self._state.daily_override = daily_litres
-            self._rebase_references(self.data or {})
+            published = dict(self.data or {})
+            for tracker in self._selected_trackers(tank_id):
+                tracker.set_consumption(total_litres, daily_litres)
+                state = published.get(tracker.tank_id)
+                if state is not None:
+                    tracker.rebase(state)
+                    tracker.state.last_update = dt_util.now()
+                    published[tracker.tank_id] = tracker.decorate(
+                        dict(state), self._kwh_per_litre
+                    )
             await self._async_persist()
-
-            if self.data:
-                self.async_set_updated_data(self._decorate(dict(self.data)))
+            if published:
+                self.async_set_updated_data(published)
 
         _LOGGER.info(
             "Manually set consumption: total=%s L (%s kWh), daily=%s",
@@ -278,135 +291,26 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             "unchanged" if daily_litres is None else f"{daily_litres} L/day",
         )
 
-    async def async_force_consumption_reference(self, state: dict) -> None:
-        """Rebase the references on `state` without resetting the totals."""
-        async with self._lock:
-            self._rebase_references(state)
-            await self._async_persist()
-
-    def _rebase_references(self, state: dict) -> None:
-        """Point the references at a reading. Callers hold the lock.
-
-        Only validated readings become references. A missing level used to be
-        coerced to 0, which made the very next poll look like the tank had
-        been filled from empty.
-        """
-        volume = volume_litres(state.get("usable_volume_litres"))
-        level = percentage(state.get("total_level_percentage"))
-
-        if volume is None and level is None:
-            _LOGGER.warning(
-                "Refusing to set a consumption reference from a reading with "
-                "neither a volume nor a level"
-            )
-            return
-
-        self._state.reference_volume = volume
-        self._state.reference_level = level
-        self._state.last_update = dt_util.now()
+    def _selected_trackers(self, tank_id: str | None) -> list[TankTracker]:
+        """Return the trackers an operation applies to."""
+        if tank_id is None:
+            return list(self._trackers.values())
+        tracker = self._trackers.get(tank_id)
+        return [tracker] if tracker else []
 
     # ------------------------------------------------------------------
     # Update cycle
     # ------------------------------------------------------------------
 
-    def _record_consumption(self, litres: float, now: datetime) -> None:
-        """Record observed consumption. Callers hold the lock."""
-        self._state.total_litres += litres
-        self._state.history.extend(
-            consumption.allocate_over_days(litres, self._state.last_update, now)
-        )
-        self._refresh_rolling_average(now)
+    def _wanted(self, listed: list[str]) -> list[str]:
+        """Return the tanks this entry should track, in listing order."""
+        if self._pinned_tank_id:
+            return [self._pinned_tank_id]
 
-        # Consumption was detected, so the next interval starts from here.
-        self._state.last_update = now
-
-    def _refresh_rolling_average(self, now: datetime) -> dict[str, float]:
-        """Recompute the rolling daily rate. Returns the regrouped totals."""
-        totals = consumption.daily_totals(self._state.history)
-        window = consumption.rolling_window(totals, now)
-        self._sample_days = len(window)
-        self._state.daily_litres = consumption.average(window) if window else None
-        return totals
-
-    def _apply_reading(self, reading: TankReading, now: datetime) -> None:
-        """Move the running totals on from a validated reading."""
-        if self._state.reference_volume is None and self._state.reference_level is None:
-            _LOGGER.info(
-                "First update or reference values missing - setting initial "
-                "values without calculating consumption"
-            )
-            self._rebase_references(reading.as_state())
-            return
-
-        transition = consumption.classify(
-            self._state.reference_volume, self._state.reference_level, reading
-        )
-
-        if transition.is_refill:
-            _LOGGER.info(
-                "Detected a tank refill of %s L from the %s",
-                round(transition.litres_added, 1),
-                transition.source,
-            )
-            # The next consumption interval starts from now.
-            self._state.last_update = now
-        elif transition.is_consumption:
-            _LOGGER.info(
-                "Detected consumption of %s L from the %s",
-                round(transition.litres_consumed, 1),
-                transition.source,
-            )
-            self._record_consumption(transition.litres_consumed, now)
-
-        # Only advance a reference we actually have a fresh reading for. A
-        # reading that carries a level but no volume must not blank the volume
-        # reference, or the next poll would book the whole tank as consumed.
-        if reading.volume_litres is not None:
-            self._state.reference_volume = reading.volume_litres
-        if reading.level_percentage is not None:
-            self._state.reference_level = reading.level_percentage
-
-    def _decorate(self, state: dict[str, Any]) -> dict[str, Any]:
-        """Attach the derived consumption figures to a published state."""
-        daily = self.daily_consumption_usable_liters
-
-        state["total_consumption_usable_liters"] = self._state.total_litres
-        state["total_consumption_usable_kwh"] = self.total_consumption_usable_kwh
-        state["daily_consumption_usable_liters"] = daily
-        state["consumption_sample_days"] = self.consumption_sample_days
-        state["daily_consumption_is_manual"] = self.daily_consumption_is_manual
-        state["days_until_empty"] = consumption.days_until_empty(
-            state.get("current_volume_litres"),
-            state.get("capacity_litres"),
-            state.get("total_level_percentage"),
-            daily or 0.0,
-        )
-        state["kwh_per_litre"] = self._kwh_per_litre
-
-        if self._last_price_pence is not None:
-            state["current_price_pence"] = self._last_price_pence
-            if self._last_price_updated is not None:
-                state["price_last_updated"] = self._last_price_updated.isoformat()
-
-        return state
-
-    def _publish(self, reading: TankReading, now: datetime) -> dict[str, Any]:
-        """Return the state dict for `reading`, with the derived figures."""
-        state = reading.as_state()
-
-        # Recalculate on every run, not just when consumption was detected,
-        # so old incorrect data ages out after the rolling window.
-        if self._state.history:
-            totals = self._refresh_rolling_average(now)
-            self._state.history = consumption.trim_history(
-                totals, now, self._local_midnight
-            )
-            seasonal = consumption.seasonal_stats(totals, now, self._local_midnight)
-        else:
-            seasonal = {}
-
-        state["seasonal_stats"] = seasonal
-        return self._decorate(state)
+        included = self._config_value(CONF_TANKS)
+        if included:
+            return [tank_id for tank_id in listed if tank_id in included]
+        return listed
 
     async def _async_refresh_price(self) -> None:
         """Refresh the oil price, keeping the last good value on failure."""
@@ -415,33 +319,176 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             self._last_price_pence = price
             self._last_price_updated = dt_util.now()
 
-    async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch data from BoilerJuice."""
-        await self._async_load()
+    def _with_price(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Attach the account-wide oil price to a tank's published state."""
+        if self._last_price_pence is not None:
+            state["current_price_pence"] = self._last_price_pence
+            if self._last_price_updated is not None:
+                state["price_last_updated"] = self._last_price_updated.isoformat()
+        return state
 
+    async def _async_list_tanks(self) -> list[str]:
+        """Return the tanks on the account, or just the pinned one."""
+        if self._pinned_tank_id:
+            return [self._pinned_tank_id]
+        return await self._client.async_list_tank_ids()
+
+    async def _async_fetch_readings(
+        self, tank_ids: list[str]
+    ) -> dict[str, TankReading]:
+        """Fetch each wanted tank, tolerating individual failures.
+
+        One tank that will not parse must not cost the others their update,
+        but a failure across the board is a real failure.
+        """
+        readings: dict[str, TankReading] = {}
+        failures: list[Exception] = []
+
+        for tank_id in tank_ids:
+            try:
+                readings[tank_id] = await self._client.async_fetch_tank(tank_id)
+            except BoilerJuiceAuthError:
+                raise
+            except UpdateFailed as err:
+                _LOGGER.warning("Could not read one of the tanks: %s", err)
+                failures.append(err)
+
+        if not readings and failures:
+            raise failures[0]
+        return readings
+
+    def _note_absences(self, listed: list[str]) -> list[str]:
+        """Count tanks missing from an authoritative listing; return removals."""
+        removals = []
+        for tank_id in list(self._trackers):
+            if tank_id in listed:
+                self._account.missing.pop(tank_id, None)
+                continue
+            seen_missing = self._account.missing.get(tank_id, 0) + 1
+            self._account.missing[tank_id] = seen_missing
+            if seen_missing >= MISSING_LISTINGS_BEFORE_REMOVAL:
+                removals.append(tank_id)
+        return removals
+
+    def _forget(self, tank_id: str) -> None:
+        """Drop a tank that BoilerJuice has consistently stopped listing."""
+        _LOGGER.info(
+            "A tank has been absent from %d consecutive BoilerJuice listings; "
+            "removing it",
+            MISSING_LISTINGS_BEFORE_REMOVAL,
+        )
+        self._trackers.pop(tank_id, None)
+        self._account.tanks.pop(tank_id, None)
+        self._account.missing.pop(tank_id, None)
+
+        registry = dr.async_get(self.hass)
+        device = registry.async_get_device(identifiers={(DOMAIN, tank_id)})
+        if device is not None and self._entry_id:
+            registry.async_update_device(
+                device.id, remove_config_entry_id=self._entry_id
+            )
+
+    def _claim_unassigned(self, tank_ids: list[str]) -> None:
+        """Attach migrated v1 history to its tank, if we can tell which.
+
+        The v1 document never recorded a tank id, so it can only be claimed
+        when the account turns out to have exactly one tank.
+        """
+        if self._account.unassigned is None:
+            return
+
+        if len(tank_ids) == 1 and tank_ids[0] not in self._account.tanks:
+            self._account.tanks[tank_ids[0]] = self._account.unassigned
+            _LOGGER.info("Attached the migrated consumption history to this tank")
+        else:
+            _LOGGER.warning(
+                "Could not tell which of this account's %d tanks the migrated "
+                "consumption history belongs to; starting those tanks fresh",
+                len(tank_ids),
+            )
+        self._account.unassigned = None
+
+    async def _async_collect(self) -> tuple[list[str], dict[str, TankReading]]:
+        """List the account's tanks and read the ones we want.
+
+        Maps every failure onto the right coordinator outcome: rejected
+        credentials become a reauth flow rather than an endless hourly retry.
+        """
         try:
-            reading = await self._client.async_fetch_tank(self._tank_id)
+            listed = await self._async_list_tanks()
+            wanted = self._wanted(listed)
+            if not wanted:
+                raise UpdateFailed(
+                    "No BoilerJuice tank on this account matches the "
+                    "integration's configuration"
+                )
+            return listed, await self._async_fetch_readings(wanted)
+        except BoilerJuiceAuthError as err:
+            self._client.invalidate_session()
+            raise ConfigEntryAuthFailed(str(err)) from err
         except UpdateFailed:
-            # A failure means we have no reading, so nothing is applied and
-            # the previous state stands. The coordinator logs one warning and
-            # retries on the next interval.
+            # No reading means nothing is applied and the previous state
+            # stands. The coordinator logs one warning and retries.
             raise
         except Exception as err:
             _LOGGER.exception("Unexpected error updating BoilerJuice data")
             raise UpdateFailed(f"Unexpected error updating tank data: {err}") from err
 
+    async def _async_update_data(self) -> dict[str, dict[str, Any]]:
+        """Fetch every wanted tank on the account."""
+        await self._async_load()
+
+        listed, readings = await self._async_collect()
+
         await self._async_refresh_price()
+
+        known_before = set(self._trackers)
 
         async with self._lock:
             now = dt_util.now()
-            self._apply_reading(reading, now)
-            state = self._publish(reading, now)
+            self._claim_unassigned(listed)
+
+            published: dict[str, dict[str, Any]] = {}
+            for tank_id, reading in readings.items():
+                tracker = self._tracker_for(tank_id)
+                tracker.apply(reading, now)
+                published[tank_id] = self._with_price(
+                    tracker.publish(reading, now, self._kwh_per_litre)
+                )
+
+            # Tanks we could not read this time keep their previous state
+            # rather than disappearing from the dashboard.
+            for tank_id, previous in (self.data or {}).items():
+                published.setdefault(tank_id, previous)
+
+            for tank_id in self._note_absences(listed):
+                self._forget(tank_id)
+                published.pop(tank_id, None)
+
             await self._async_persist()
 
-        _LOGGER.debug(
-            "Consumption: total=%s L, daily=%s, sample days=%s",
-            round(self._state.total_litres, 1),
-            self._state.effective_daily_litres,
-            self._sample_days,
-        )
-        return state
+        self._register_devices(published)
+
+        discovered = [tank_id for tank_id in published if tank_id not in known_before]
+        if discovered and known_before:
+            for listener in self._new_tank_listeners:
+                listener(discovered)
+
+        return published
+
+    @callback
+    def _register_devices(self, published: dict[str, dict[str, Any]]) -> None:
+        """Create or refresh one device per tank."""
+        if not self._entry_id:
+            return
+
+        registry = dr.async_get(self.hass)
+        for tank_id, state in published.items():
+            registry.async_get_or_create(
+                config_entry_id=self._entry_id,
+                identifiers={(DOMAIN, tank_id)},
+                name=state.get("name") or state.get("model") or "BoilerJuice Tank",
+                manufacturer=state.get("manufacturer", "BoilerJuice"),
+                model=state.get("model"),
+                configuration_url="https://www.boilerjuice.com/uk",
+            )

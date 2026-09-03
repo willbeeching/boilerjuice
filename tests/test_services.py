@@ -18,10 +18,11 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClien
 from custom_components.boilerjuice import (
     SERVICE_RESET_CONSUMPTION,
     SERVICE_SET_CONSUMPTION,
+    async_setup_services,
 )
 from custom_components.boilerjuice.const import DOMAIN
 
-from .helpers import setup_account
+from .helpers import coordinator_of, reading_of, setup_account, tracker_of
 
 
 @pytest.fixture
@@ -36,16 +37,19 @@ async def two_accounts(
         hass, aioclient_mock, email="two@example.com", tank_id="222222", litres=1500
     )
 
-    for entry, total in ((first, 40.0), (second, 90.0)):
-        hass.data[DOMAIN][entry.entry_id]._state.total_litres = total
+    for entry, tank_id, total in ((first, "111111", 40.0), (second, "222222", 90.0)):
+        tracker_of(coordinator_of(entry), tank_id).state.total_litres = total
 
     return first, second
 
 
 def totals(hass: HomeAssistant, *entries: MockConfigEntry) -> list[float]:
-    """Return each entry's recorded total consumption."""
+    """Return each account's recorded total consumption."""
     return [
-        hass.data[DOMAIN][entry.entry_id].total_consumption_usable_liters
+        sum(
+            coordinator_of(entry).tracker(tank_id).total_litres
+            for tank_id in coordinator_of(entry).tank_ids
+        )
         for entry in entries
     ]
 
@@ -140,10 +144,8 @@ async def test_an_unknown_entity_target_is_refused(
 async def test_set_consumption_uses_the_configured_energy_content(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
-    entry = await setup_account(
-        hass, aioclient_mock, email="one@example.com", tank_id="111111", litres=2000
-    )
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    entry = await setup_account(hass, aioclient_mock, litres=2000)
+    coordinator = coordinator_of(entry)
     coordinator._kwh_per_litre = 9.6
 
     await hass.services.async_call(
@@ -154,8 +156,12 @@ async def test_set_consumption_uses_the_configured_energy_content(
     )
     await hass.async_block_till_done()
 
-    assert coordinator.total_consumption_usable_kwh == pytest.approx(960.0)
-    assert coordinator.data["total_consumption_usable_kwh"] == pytest.approx(960.0)
+    assert tracker_of(coordinator).total_kwh(
+        coordinator.kwh_per_litre
+    ) == pytest.approx(960.0)
+    assert reading_of(coordinator)["total_consumption_usable_kwh"] == pytest.approx(
+        960.0
+    )
 
 
 async def test_a_label_target_reaches_only_that_account(
@@ -254,7 +260,7 @@ async def test_a_single_account_needs_no_target(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
     entry = await setup_account(hass, aioclient_mock)
-    hass.data[DOMAIN][entry.entry_id]._state.total_litres = 40.0
+    tracker_of(coordinator_of(entry)).state.total_litres = 40.0
 
     await hass.services.async_call(DOMAIN, SERVICE_RESET_CONSUMPTION, {}, blocking=True)
     await hass.async_block_till_done()
@@ -265,10 +271,12 @@ async def test_a_single_account_needs_no_target(
 async def test_calling_a_service_with_nothing_loaded_is_refused(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
-    await setup_account(hass, aioclient_mock)
-    # Keep the services registered while emptying the coordinator registry,
-    # which is what a call racing an unload would see.
-    hass.data[DOMAIN] = {}
+    entry = await setup_account(hass, aioclient_mock)
+    # Keep the services registered while the entry is unloaded, which is what
+    # a call racing an unload would see.
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    async_setup_services(hass)
 
     with pytest.raises(HomeAssistantError):
         await hass.services.async_call(
@@ -280,7 +288,7 @@ async def test_set_consumption_also_sets_the_daily_rate(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
     entry = await setup_account(hass, aioclient_mock)
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = coordinator_of(entry)
 
     await hass.services.async_call(
         DOMAIN,
@@ -290,15 +298,15 @@ async def test_set_consumption_also_sets_the_daily_rate(
     )
     await hass.async_block_till_done()
 
-    assert coordinator.daily_consumption_usable_liters == 7.5
-    assert coordinator.data["daily_consumption_usable_liters"] == 7.5
+    assert tracker_of(coordinator).daily_litres == 7.5
+    assert reading_of(coordinator)["daily_consumption_usable_liters"] == 7.5
 
 
 async def test_set_consumption_skips_an_account_with_no_reading_yet(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
     entry = await setup_account(hass, aioclient_mock)
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = coordinator_of(entry)
     coordinator.data = None
 
     await hass.services.async_call(
@@ -309,4 +317,4 @@ async def test_set_consumption_skips_an_account_with_no_reading_yet(
     )
     await hass.async_block_till_done()
 
-    assert coordinator.total_consumption_usable_liters == 0.0
+    assert tracker_of(coordinator).total_litres == 0.0

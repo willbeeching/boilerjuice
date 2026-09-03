@@ -5,6 +5,7 @@ from __future__ import annotations
 import aiohttp
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
@@ -16,20 +17,20 @@ from custom_components.boilerjuice.const import (
     TANKS_URL,
 )
 from custom_components.boilerjuice.coordinator import BoilerJuiceDataUpdateCoordinator
-from custom_components.boilerjuice.errors import (
-    BoilerJuiceAuthError,
-    BoilerJuiceConnectionError,
-)
+from custom_components.boilerjuice.errors import BoilerJuiceConnectionError
 from custom_components.boilerjuice.storage import STORAGE_VERSION
 
 from .helpers import (
     PRICE_PAGE,
     SIGNED_IN_PAGE,
+    TANK_ID,
     TANK_URL,
     load_fixture,
     make_entry,
     mock_site,
+    reading_of,
     tank_page,
+    tracker_of,
 )
 
 
@@ -118,12 +119,12 @@ async def test_the_tanks_page_redirecting_to_login_is_an_auth_error(
 
         await made.async_refresh()
 
-        assert isinstance(made.last_exception, BoilerJuiceAuthError)
+        assert isinstance(made.last_exception, ConfigEntryAuthFailed)
     finally:
         await made.async_close()
 
 
-async def test_the_first_of_several_tanks_is_used(
+async def test_every_tank_on_the_account_is_tracked(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
     entry = make_entry(hass, tank_id=None)
@@ -134,12 +135,60 @@ async def test_the_first_of_several_tanks_is_used(
         aioclient_mock.post(LOGIN_URL, text=SIGNED_IN_PAGE)
         aioclient_mock.get(TANKS_URL, text=load_fixture("tanks_list_multiple.html"))
         aioclient_mock.get(TANK_URL, text=tank_page(percentage=80, litres=2000))
+        aioclient_mock.get(
+            f"{TANKS_URL}/789012/edit", text=tank_page(percentage=40, litres=900)
+        )
         aioclient_mock.get(PRICE_URL, text=PRICE_PAGE)
 
         await made.async_refresh()
         await hass.async_block_till_done()
 
-        assert made.data["id"] == "123456"
+        assert sorted(made.tank_ids) == ["123456", "789012"]
+        assert reading_of(made, "789012")["usable_volume_litres"] == 900
+    finally:
+        await made.async_close()
+
+
+async def test_one_unreadable_tank_does_not_cost_the_others_their_update(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    entry = make_entry(hass, tank_id=None)
+    made = BoilerJuiceDataUpdateCoordinator(hass, entry)
+
+    try:
+        aioclient_mock.get(LOGIN_URL, text=load_fixture("login.html"))
+        aioclient_mock.post(LOGIN_URL, text=SIGNED_IN_PAGE)
+        aioclient_mock.get(TANKS_URL, text=load_fixture("tanks_list_multiple.html"))
+        aioclient_mock.get(TANK_URL, text=tank_page(percentage=80, litres=2000))
+        aioclient_mock.get(
+            f"{TANKS_URL}/789012/edit", text=load_fixture("tank_redesigned.html")
+        )
+        aioclient_mock.get(PRICE_URL, text=PRICE_PAGE)
+
+        await made.async_refresh()
+        await hass.async_block_till_done()
+
+        assert made.last_update_success
+        assert made.tank_ids == ["123456"]
+    finally:
+        await made.async_close()
+
+
+async def test_an_account_where_no_tank_can_be_read_fails_the_update(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    entry = make_entry(hass, tank_id=None)
+    made = BoilerJuiceDataUpdateCoordinator(hass, entry)
+
+    try:
+        aioclient_mock.get(LOGIN_URL, text=load_fixture("login.html"))
+        aioclient_mock.post(LOGIN_URL, text=SIGNED_IN_PAGE)
+        aioclient_mock.get(TANKS_URL, text=load_fixture("tanks_list.html"))
+        aioclient_mock.get(TANK_URL, text=load_fixture("tank_redesigned.html"))
+
+        await made.async_refresh()
+
+        assert not made.last_update_success
     finally:
         await made.async_close()
 
@@ -183,8 +232,7 @@ async def test_an_unreadable_stored_timestamp_is_refused(
     try:
         await made._async_load()
 
-        assert made.last_level_change is None
-        assert made.total_consumption_usable_liters == 0.0
+        assert made.tank_ids == []
     finally:
         await made.async_close()
 
@@ -211,7 +259,7 @@ async def test_an_implausible_price_is_ignored(
         await hass.async_block_till_done()
 
         assert made.last_update_success
-        assert "current_price_pence" not in made.data
+        assert "current_price_pence" not in reading_of(made)
     finally:
         await made.async_close()
 
@@ -231,7 +279,7 @@ async def test_consumption_is_derived_from_the_percentage_when_there_is_no_volum
         await hass.async_block_till_done()
 
         # 1% of a 2500 L tank.
-        assert made.total_consumption_usable_liters == pytest.approx(25.0)
+        assert tracker_of(made).total_litres == pytest.approx(25.0)
     finally:
         await made.async_close()
 
@@ -250,16 +298,18 @@ async def test_a_refill_seen_only_in_the_percentage_is_not_consumption(
         await made.async_refresh()
         await hass.async_block_till_done()
 
-        assert made.total_consumption_usable_liters == 0.0
+        assert tracker_of(made).total_litres == 0.0
     finally:
         await made.async_close()
 
 
 async def test_a_reference_cannot_be_set_from_an_empty_reading(coordinator) -> None:
-    coordinator._state.reference_volume = 2000
-    coordinator._state.reference_level = 80.0
+    """An empty reading must leave the existing references alone."""
+    tracker = coordinator._tracker_for(TANK_ID)
+    tracker.state.reference_volume = 2000
+    tracker.state.reference_level = 80.0
 
-    await coordinator.async_force_consumption_reference({})
+    tracker.rebase({})
 
-    assert coordinator._state.reference_volume == 2000
-    assert coordinator._state.reference_level == 80.0
+    assert tracker.state.reference_volume == 2000
+    assert tracker.state.reference_level == 80.0
