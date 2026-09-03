@@ -40,6 +40,10 @@ from .runtime import BoilerJuiceConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
+# Every value comes from the coordinator's single fetch, so there is no
+# per-entity request to serialise and no reason to limit concurrency.
+PARALLEL_UPDATES = 0
+
 # Unit strings Home Assistant has no constant for.
 LITRES_PER_DAY = "L/day"
 KWH_PER_LITRE = "kWh/L"
@@ -142,7 +146,6 @@ SENSORS: tuple[BoilerJuiceSensorDescription, ...] = (
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
-        icon="mdi:storage-tank",
         value=lambda data: data.get("total_level_percentage"),
         legacy_class="BoilerJuiceOilLevelSensor",
     ),
@@ -178,7 +181,6 @@ SENSORS: tuple[BoilerJuiceSensorDescription, ...] = (
         translation_key="daily_consumption",
         native_unit_of_measurement=LITRES_PER_DAY,
         state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:gauge",
         value=_rounded("daily_consumption_usable_liters"),
         attributes=_daily_attributes,
         legacy_class="BoilerJuiceDailyConsumptionSensor",
@@ -206,7 +208,6 @@ SENSORS: tuple[BoilerJuiceSensorDescription, ...] = (
         translation_key="days_until_empty",
         native_unit_of_measurement=DAYS,
         state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:calendar-clock",
         value=lambda data: data.get("days_until_empty"),
         legacy_class="BoilerJuiceDaysUntilEmptySensor",
     ),
@@ -215,7 +216,6 @@ SENSORS: tuple[BoilerJuiceSensorDescription, ...] = (
         translation_key="energy_content",
         native_unit_of_measurement=KWH_PER_LITRE,
         entity_category=EntityCategory.DIAGNOSTIC,
-        icon="mdi:flash",
         value=lambda data: data.get("kwh_per_litre", DEFAULT_KWH_PER_LITRE),
         legacy_class="BoilerJuiceKwhPerLitreSensor",
     ),
@@ -224,7 +224,6 @@ SENSORS: tuple[BoilerJuiceSensorDescription, ...] = (
         translation_key="cost_per_kwh",
         native_unit_of_measurement=GBP_PER_KWH,
         state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:currency-gbp",
         value=_cost_per_kwh,
         legacy_class="BoilerJuiceCostPerKwhSensor",
     ),
@@ -233,7 +232,6 @@ SENSORS: tuple[BoilerJuiceSensorDescription, ...] = (
         translation_key="oil_price",
         native_unit_of_measurement=GBP_PER_LITRE,
         state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:currency-gbp",
         value=_oil_price,
         attributes=_price_attributes,
         legacy_class="BoilerJuiceOilPriceSensor",
@@ -260,7 +258,6 @@ SENSORS: tuple[BoilerJuiceSensorDescription, ...] = (
         translation_key="seasonal_consumption",
         native_unit_of_measurement=LITRES_PER_DAY,
         state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:weather-partly-cloudy",
         value=_current_season,
         attributes=_seasonal_attributes,
         legacy_class="BoilerJuiceSeasonalConsumptionSensor",

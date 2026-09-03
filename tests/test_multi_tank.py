@@ -507,3 +507,71 @@ async def test_a_target_that_names_no_tank_is_refused_not_broadened(
 
     assert tracker_of(coordinator, FIRST).total_litres == 40.0
     assert tracker_of(coordinator, SECOND).total_litres == 90.0
+
+
+async def test_a_selected_tank_that_vanishes_is_eventually_removed(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """A listing that selects nothing is still an authoritative listing.
+
+    Raising on it skipped reconciliation entirely, so the vanished tank's
+    absence was never counted and its device stayed for ever.
+    """
+    from custom_components.boilerjuice.coordinator import (
+        MISSING_LISTINGS_BEFORE_REMOVAL,
+    )
+
+    mock_account(aioclient_mock, TWO_TANKS)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_EMAIL: "someone@example.com", CONF_PASSWORD: "hunter2"},
+        options={CONF_TANKS: [FIRST]},
+        unique_id="someone@example.com",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = coordinator_of(entry)
+    assert coordinator.tank_ids == [FIRST]
+
+    # BoilerJuice stops listing the selected tank, but still lists the other.
+    mock_account(aioclient_mock, ONE_TANK.replace(FIRST, SECOND))
+
+    for poll in range(1, MISSING_LISTINGS_BEFORE_REMOVAL):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        assert coordinator.tank_ids == [FIRST], f"removed after only {poll}"
+
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    assert coordinator.tank_ids == []
+    assert tank_device(hass, entry, FIRST) is None
+    # And the entry says so rather than sitting there looking healthy.
+    assert not coordinator.last_update_success
+
+
+async def test_unloading_two_accounts_at_once_is_clean(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Both unloads must succeed; neither may trip over the other's teardown."""
+    import asyncio
+
+    from .helpers import setup_account
+
+    first = await setup_account(
+        hass, aioclient_mock, email="one@example.com", tank_id="111111"
+    )
+    second = await setup_account(
+        hass, aioclient_mock, email="two@example.com", tank_id="222222"
+    )
+
+    results = await asyncio.gather(
+        hass.config_entries.async_unload(first.entry_id),
+        hass.config_entries.async_unload(second.entry_id),
+        return_exceptions=True,
+    )
+
+    assert results == [True, True]
+    assert not hass.services.has_service(DOMAIN, SERVICE_RESET_CONSUMPTION)

@@ -8,6 +8,11 @@
 # rule below is still todo.
 #
 # status: done | exempt | todo
+#
+# One rule is still todo: `brands`, which needs a pull request against
+# home-assistant/brands. Every other applicable rule is done or exempt, but
+# the manifest deliberately claims no quality_scale until that one closes -
+# a rating is all of its tier or none of it.
 
 rules:
   # --- Bronze ---
@@ -26,7 +31,8 @@ rules:
     status: todo
     comment: >-
       Logo and icon exist under custom_components/boilerjuice/brand/ but have
-      not been submitted to home-assistant/brands.
+      not been submitted to home-assistant/brands. That is a pull request
+      against another repository, so it cannot be closed out from here.
   common-modules:
     status: done
     comment: coordinator.py, client.py, parser.py, models.py, consumption.py.
@@ -103,8 +109,11 @@ rules:
       week-long outage writes one warning, not 168. The optional oil price
       logs at debug so it cannot spam either.
   parallel-updates:
-    status: todo
-    comment: PARALLEL_UPDATES is not declared on the sensor platform.
+    status: done
+    comment: >-
+      PARALLEL_UPDATES = 0 on the sensor platform. Every value comes from the
+      coordinator's single fetch, so there is no per-entity request to
+      serialise.
   reauthentication-flow:
     status: done
   test-coverage:
@@ -128,6 +137,23 @@ rules:
   discovery:
     status: exempt
     comment: Cloud polling.
+  entity-triggers:
+    status: exempt
+    comment: >-
+      The integration contributes no triggers. Everything it publishes is a
+      sensor, and Home Assistant's own numeric-state and state triggers cover
+      the useful cases (see the automation examples in the README).
+  entity-conditions:
+    status: exempt
+    comment: >-
+      The integration contributes no conditions, for the same reason: the
+      built-in numeric-state and state conditions read these sensors
+      directly.
+  entity-actions:
+    status: exempt
+    comment: >-
+      The two account-level actions are registered in async_setup; there are
+      no per-entity actions to contribute.
   docs-data-update:
     status: done
   docs-examples:
@@ -158,18 +184,20 @@ rules:
       Oil level is no longer a battery. Volume, capacity, height, energy and
       the timestamps carry appropriate device classes.
   entity-disabled-by-default:
-    status: todo
+    status: done
     comment: >-
-      No entity is disabled by default. Worth revisiting for the rarely-read
-      diagnostic sensors.
+      Considered and deliberately none. The rule exists for entities that are
+      noisy or expensive; every sensor here comes free with a fetch that
+      happens anyway, and the five least-used are already marked diagnostic,
+      which keeps them out of the main card without hiding them.
   entity-translations:
     status: done
     comment: translation_key on every sensor, with translations/en.json.
   exception-translations:
     status: done
   icon-translations:
-    status: todo
-    comment: Icons are set on the entity descriptions, not in icons.json.
+    status: done
+    comment: icons.json, keyed by translation key. A test keeps the two in step.
   reconfiguration-flow:
     status: done
   repair-issues:

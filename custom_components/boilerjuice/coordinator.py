@@ -565,13 +565,19 @@ class BoilerJuiceDataUpdateCoordinator(
         else:
             ir.async_delete_issue(self.hass, DOMAIN, self._layout_issue_id)
 
-    async def _async_collect(self) -> tuple[list[str], dict[str, TankReading]]:
+    async def _async_collect(
+        self,
+    ) -> tuple[list[str], list[str], dict[str, TankReading]]:
         """List the account's tanks and read the ones we want.
 
         Maps every failure onto the right coordinator outcome: rejected
         credentials become a reauth flow rather than an endless hourly retry.
         Failures are attributed to the right scope, so a tank that will not
         parse is counted against that tank and not against the account.
+
+        Returns (listed, wanted, readings). A listing that selects no tanks
+        is still an authoritative listing and is returned rather than raised
+        on, so the caller can reconcile against it before reporting failure.
         """
         try:
             listed = await self._async_list_tanks()
@@ -589,14 +595,15 @@ class BoilerJuiceDataUpdateCoordinator(
 
         wanted = self._wanted(listed)
         if not wanted:
-            raise UpdateFailed(
-                "No BoilerJuice tank on this account matches the "
-                "integration's configuration"
-            )
+            # Nothing to read, but the listing was authoritative: the caller
+            # reconciles against it and then reports the failure. Raising
+            # here left a selected tank that had vanished stuck for ever,
+            # because its absence was never counted.
+            return listed, [], {}
 
         try:
             # Individual failures are recorded per tank inside this call.
-            return listed, await self._async_fetch_readings(wanted)
+            return listed, wanted, await self._async_fetch_readings(wanted)
         except BoilerJuiceAuthError as err:
             self._client.invalidate_session()
             raise ConfigEntryAuthFailed(str(err)) from err
@@ -612,12 +619,11 @@ class BoilerJuiceDataUpdateCoordinator(
         """Fetch every wanted tank on the account."""
         await self._async_load()
 
-        listed, readings = await self._async_collect()
+        listed, wanted, readings = await self._async_collect()
 
         await self._async_refresh_price()
 
         known_before = set(self._trackers)
-        wanted = self._wanted(listed)
 
         async with self._lock:
             now = dt_util.now()
@@ -642,6 +648,14 @@ class BoilerJuiceDataUpdateCoordinator(
                 published.pop(tank_id, None)
 
             await self._async_persist()
+
+        if not wanted:
+            # Reported only after reconciling, so the removal counting above
+            # has already run and been persisted.
+            raise UpdateFailed(
+                "No BoilerJuice tank on this account matches the "
+                "integration's configuration"
+            )
 
         self._register_devices(published)
 

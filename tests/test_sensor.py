@@ -187,3 +187,34 @@ async def test_asking_a_sensor_to_update_refreshes_the_coordinator(
     await hass.async_block_till_done()
 
     assert reading_of(coordinator)["total_level_percentage"] == 60
+
+
+def test_every_icon_is_declared_in_icons_json() -> None:
+    """Icons belong in icons.json, and must name a sensor that exists.
+
+    A stale key here is invisible: the entity simply falls back to its
+    device-class icon, which looks deliberate.
+    """
+    import json
+    import pathlib
+
+    from custom_components.boilerjuice.sensor import SENSORS
+
+    icons = json.loads(
+        pathlib.Path("custom_components/boilerjuice/icons.json").read_text(
+            encoding="utf-8"
+        )
+    )["entity"]["sensor"]
+
+    keys = {description.translation_key for description in SENSORS}
+    assert set(icons) <= keys, set(icons) - keys
+
+    # And no description sets an icon directly any more.
+    assert not [d for d in SENSORS if d.icon is not None]
+
+
+def test_the_platform_declares_parallel_updates() -> None:
+    """Home Assistant requires the declaration, whatever the value."""
+    from custom_components.boilerjuice import sensor
+
+    assert sensor.PARALLEL_UPDATES == 0

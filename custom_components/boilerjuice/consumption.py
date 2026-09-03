@@ -10,7 +10,7 @@ from __future__ import annotations
 import statistics
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .models import TankReading
@@ -56,6 +56,18 @@ class Transition:
 
 
 UNCHANGED = Transition()
+
+
+def elapsed_seconds(later: datetime, earlier: datetime) -> float:
+    """Return the real seconds between two aware datetimes.
+
+    Both are converted to UTC first. Subtracting two aware datetimes that
+    share a tzinfo object makes CPython ignore the zone and subtract them as
+    if they were naive, which returns wall-clock time: the 23-hour day when
+    the clocks go forward measures 24 hours, and the 25-hour day measures 24
+    as well. That is exactly the arithmetic the day-weighting must not do.
+    """
+    return (later.astimezone(UTC) - earlier.astimezone(UTC)).total_seconds()
 
 
 def season_for(moment: datetime) -> str:
@@ -115,10 +127,9 @@ def allocate_over_days(
     burnt while Home Assistant was down (or between sparse tank readings)
     belongs to the days it spanned rather than to the day we noticed it.
 
-    Each calendar day is weighted by how much of the interval fell inside it,
-    so the shares sum back to exactly `litres`. Weighting by elapsed time
-    rather than by whole dates is what keeps a daylight-saving day (23 or 25
-    hours long) balanced.
+    Each calendar day is weighted by the real time the interval spent inside
+    it, so the shares sum back to exactly `litres` and a daylight-saving day
+    gets the share its 23 or 25 hours earned rather than a flat 24.
 
     The shortcut is taken on the calendar date, not on the length of the
     interval. Testing "under 24 hours" put a 23:30 to 00:30 drop entirely on
@@ -128,7 +139,7 @@ def allocate_over_days(
     if since is None:
         return [(now, litres)]
 
-    interval_seconds = (now - since).total_seconds()
+    interval_seconds = elapsed_seconds(now, since)
     if interval_seconds <= 0:
         # The clock went backwards. There is no interval to spread over.
         return [(now, litres)]
@@ -142,7 +153,7 @@ def allocate_over_days(
     while day <= last_day:
         day_start = datetime.combine(day, datetime.min.time(), tzinfo=since.tzinfo)
         day_end = day_start + timedelta(days=1)
-        overlap = (min(now, day_end) - max(since, day_start)).total_seconds()
+        overlap = elapsed_seconds(min(now, day_end), max(since, day_start))
         if overlap > 0:
             allocated.append((day_start, litres * overlap / interval_seconds))
         day += timedelta(days=1)

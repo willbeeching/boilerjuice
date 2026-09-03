@@ -51,24 +51,46 @@ def test_a_drop_spanning_days_is_shared_by_time_in_each_day() -> None:
 
 
 @pytest.mark.parametrize(
-    ("month", "start_day", "end_day"),
+    ("month", "start_day", "end_day", "shares"),
     [
-        pytest.param(3, 28, 30, id="clocks-forward"),
-        pytest.param(10, 24, 26, id="clocks-back"),
+        # Spring: the middle day is 23 hours long, so the interval is 47
+        # hours and the middle day earns 23/47 of the oil, not a flat half.
+        pytest.param(3, 28, 30, (12 / 47, 23 / 47, 12 / 47), id="clocks-forward"),
+        # Autumn: the middle day is 25 hours long out of 49.
+        pytest.param(10, 24, 26, (12 / 49, 25 / 49, 12 / 49), id="clocks-back"),
     ],
 )
-def test_the_shares_still_sum_across_a_dst_boundary(
-    month: int, start_day: int, end_day: int
+def test_a_dst_day_earns_the_share_its_real_hours_bought(
+    month: int, start_day: int, end_day: int, shares: tuple[float, float, float]
 ) -> None:
-    """A 23- or 25-hour day must not gain or lose oil."""
+    """Weighting must be by physical time, not by wall clock.
+
+    Subtracting two aware datetimes that share a tzinfo object makes CPython
+    ignore the zone and subtract as if they were naive, which reports every
+    day as 24 hours. That gave a flat 25/50/25 across both clock changes.
+    Asserting only that the shares sum to the total does not catch it, which
+    is how it survived the first time.
+    """
     allocated = consumption.daily_totals(
         consumption.allocate_over_days(
-            96.0, at(start_day, month=month), at(end_day, month=month)
+            94.0, at(start_day, month=month), at(end_day, month=month)
         )
     )
 
     assert len(allocated) == 3
-    assert sum(allocated.values()) == pytest.approx(96.0)
+    assert [pytest.approx(v) for v in allocated.values()] == [
+        pytest.approx(94.0 * share) for share in shares
+    ]
+    assert sum(allocated.values()) == pytest.approx(94.0)
+
+
+def test_elapsed_time_is_measured_in_utc() -> None:
+    """The seam the day-weighting depends on."""
+    forward = consumption.elapsed_seconds(at(30, month=3), at(28, month=3))
+    back = consumption.elapsed_seconds(at(26, month=10), at(24, month=10))
+
+    assert forward == 47 * 3600
+    assert back == 49 * 3600
 
 
 def test_a_clock_that_went_backwards_lands_on_one_day() -> None:

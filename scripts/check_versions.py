@@ -20,7 +20,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "custom_components" / "boilerjuice" / "manifest.json"
 HACS = ROOT / "hacs.json"
-QUALITY_SCALE = ROOT / "quality_scale.yaml"
+QUALITY_SCALE = ROOT / "custom_components" / "boilerjuice" / "quality_scale.yaml"
 MIN_REQUIREMENTS = ROOT / "requirements-test-min.txt"
 CURRENT_REQUIREMENTS = ROOT / "requirements-test.txt"
 CI = ROOT / ".github" / "workflows" / "ci.yaml"

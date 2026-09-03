@@ -225,3 +225,45 @@ async def test_migrated_history_is_dropped_when_the_tank_is_ambiguous(
     coordinator = coordinator_of(entry)
     assert tracker_of(coordinator, "123456").total_litres == 0.0
     assert tracker_of(coordinator, "789012").total_litres == 0.0
+
+
+# --- the diagnostic scripts -----------------------------------------------
+
+
+def test_the_saved_page_script_uses_the_real_parser(tmp_path) -> None:
+    """A second copy of the parsing rules would drift out of step."""
+    import sys
+
+    sys.path.insert(0, "scripts")
+    from check_saved_tank_page import main
+
+    good = tmp_path / "good.html"
+    good.write_text(load_fixture("tank_current.html"), encoding="utf-8")
+    assert main(["check_saved_tank_page.py", str(good)]) == 0
+
+    bad = tmp_path / "bad.html"
+    bad.write_text(load_fixture("tank_redesigned.html"), encoding="utf-8")
+    assert main(["check_saved_tank_page.py", str(bad)]) == 1
+
+
+def test_the_saved_page_script_redacts_by_default(tmp_path, capsys) -> None:
+    """Output is meant to be safe to paste into a public issue."""
+    import sys
+
+    sys.path.insert(0, "scripts")
+    from check_saved_tank_page import main
+
+    page = tmp_path / "page.html"
+    page.write_text(load_fixture("tank_current.html"), encoding="utf-8")
+
+    main(["check_saved_tank_page.py", str(page)])
+    redacted = capsys.readouterr().out
+
+    # The fixture's own values, none of which may appear.
+    for secret in ("62.5", "1562", "Garden Tank", "Harlequin", "H2500T"):
+        assert secret not in redacted, f"leaked {secret!r}"
+    assert "found" in redacted
+
+    main(["check_saved_tank_page.py", str(page), "--show-values"])
+    shown = capsys.readouterr().out
+    assert "Garden Tank" in shown
