@@ -28,7 +28,7 @@ async def test_the_full_set_of_sensors_is_created(
         for state in hass.states.async_all("sensor")
         if state.entity_id.startswith("sensor.")
     ]
-    assert len(states) == 13
+    assert len(states) == 14
 
 
 async def test_sensor_values_come_from_the_parsed_page(
@@ -47,11 +47,11 @@ async def test_sensor_values_come_from_the_parsed_page(
         return matches[0].state
 
     assert value("_oil_level") == "62.5"
-    assert value("_oil_tank_volume") == "1562"
-    assert value("_oil_tank_capacity") == "2500"
-    assert value("_oil_tank_height") == "120"
+    assert value("_volume") == "1562"
+    assert value("_capacity") == "2500"
+    assert value("_height") == "120"
     assert value("_oil_energy_content") == "10.35"
-    assert value("_boilerjuice_oil_price") == "0.62"
+    assert value("_oil_price") == "0.62"
     assert value("_oil_cost_per_kwh") == "0.0603"
     assert value("_total_oil_consumption") == "0.0"
 
@@ -69,7 +69,7 @@ async def test_the_price_sensor_is_unknown_before_a_price_is_seen(
     price = next(
         state
         for state in hass.states.async_all("sensor")
-        if state.entity_id.endswith("_boilerjuice_oil_price")
+        if state.entity_id.endswith("_oil_price")
     )
     assert price.state == "unknown"
 
@@ -125,7 +125,7 @@ async def test_the_last_update_sensor_reports_when_the_level_last_moved(
     last_update = next(
         state
         for state in hass.states.async_all("sensor")
-        if state.entity_id.endswith("_last_updated")
+        if state.entity_id.endswith("_last_level_change")
     )
     assert last_update.state != "unknown"
     assert tracker_of(coordinator).last_level_change is not None
@@ -134,37 +134,52 @@ async def test_the_last_update_sensor_reports_when_the_level_last_moved(
 async def test_every_sensor_reports_unknown_when_there_is_no_reading(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
-    """A coordinator with no data must not make any sensor raise."""
-    from custom_components.boilerjuice import sensor as sensor_module
+    """A tank with no reading must not make any sensor raise."""
+    from custom_components.boilerjuice.sensor import SENSORS, BoilerJuiceSensor
 
     entry = await setup_account(hass, aioclient_mock)
     coordinator = coordinator_of(entry)
 
     entities = [
-        cls(coordinator, TANK_ID)
-        for cls in vars(sensor_module).values()
-        if isinstance(cls, type)
-        and issubclass(cls, sensor_module.BoilerJuiceSensor)
-        and cls is not sensor_module.BoilerJuiceSensor
+        BoilerJuiceSensor(coordinator, TANK_ID, description) for description in SENSORS
     ]
-    assert len(entities) == 13
+    assert len(entities) == 14
 
     coordinator.data = None
 
     for entity in entities:
         entity.hass = hass
         assert entity.native_value is None
-        assert entity.extra_state_attributes in (None, {})
+        assert entity.extra_state_attributes is None
+        assert not entity.available
+
+
+async def test_every_sensor_has_a_translated_name() -> None:
+    """A missing translation shows up as a nameless entity in the UI."""
+    import json
+    import pathlib as _pathlib
+
+    from custom_components.boilerjuice.sensor import SENSORS
+
+    for name in ("strings.json", "translations/en.json"):
+        translations = json.loads(
+            (_pathlib.Path("custom_components/boilerjuice") / name).read_text(
+                encoding="utf-8"
+            )
+        )
+        named = translations["entity"]["sensor"]
+        for description in SENSORS:
+            assert description.translation_key in named, (name, description.key)
 
 
 async def test_asking_a_sensor_to_update_refreshes_the_coordinator(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
-    from custom_components.boilerjuice.sensor import BoilerJuiceOilLevelSensor
+    from custom_components.boilerjuice.sensor import SENSORS, BoilerJuiceSensor
 
     entry = await setup_account(hass, aioclient_mock)
     coordinator = coordinator_of(entry)
-    entity = BoilerJuiceOilLevelSensor(coordinator, TANK_ID)
+    entity = BoilerJuiceSensor(coordinator, TANK_ID, SENSORS[0])
     entity.hass = hass
 
     mock_site(aioclient_mock, tank_html=tank_page(percentage=60, litres=1500))

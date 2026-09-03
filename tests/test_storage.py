@@ -479,3 +479,41 @@ async def test_resetting_clears_a_manual_daily_rate(
         assert not tracker_of(coordinator).daily_is_manual
     finally:
         await coordinator.async_close()
+
+
+async def test_a_run_of_unreadable_pages_raises_a_repair(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """A persistent layout change needs the user to look for an update."""
+    from custom_components.boilerjuice.coordinator import (
+        PARSE_FAILURES_BEFORE_REPAIR,
+    )
+
+    from .helpers import load_fixture
+
+    entry = make_entry(hass)
+    coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
+    issue_id = f"page_layout_changed_{entry.entry_id}"
+
+    try:
+        mock_site(aioclient_mock, tank_html=tank_page(percentage=80, litres=2000))
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+        mock_site(aioclient_mock, tank_html=load_fixture("tank_redesigned.html"))
+        for _ in range(PARSE_FAILURES_BEFORE_REPAIR - 1):
+            await coordinator.async_refresh()
+            await hass.async_block_till_done()
+        assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
+
+        # And it clears as soon as a page parses again.
+        mock_site(aioclient_mock, tank_html=tank_page(percentage=80, litres=2000))
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+    finally:
+        await coordinator.async_close()

@@ -20,6 +20,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -34,7 +35,7 @@ from .const import (
     DEFAULT_KWH_PER_LITRE,
     DOMAIN,
 )
-from .errors import BoilerJuiceAuthError
+from .errors import BoilerJuiceAuthError, BoilerJuiceParseError
 from .models import TankReading
 from .parser import finite, validate_tank_id
 from .storage import AccountState, ConsumptionState, ConsumptionStore
@@ -49,6 +50,11 @@ SCAN_INTERVAL = timedelta(hours=1)
 # device is removed. A listing that failed is not authoritative and never
 # counts, so an outage cannot delete anybody's devices.
 MISSING_LISTINGS_BEFORE_REMOVAL = 3
+
+# BoilerJuice is scraped, so the page shape can change under us. One bad
+# poll is noise; this many in a row is a site change the user needs to
+# know about, because readings have stopped and only an update will fix it.
+PARSE_FAILURES_BEFORE_REPAIR = 3
 
 # Re-exported so the rest of the integration has one import site for these.
 CONSUMPTION_ROLLING_DAYS = consumption.CONSUMPTION_ROLLING_DAYS
@@ -101,6 +107,8 @@ class BoilerJuiceDataUpdateCoordinator(
         # overwritten by the poll's own save.
         self._lock = asyncio.Lock()
         self._loaded = False
+        self._consecutive_parse_failures = 0
+        self._last_successful_update: datetime | None = None
         self._new_tank_listeners: list[Callable[[list[str]], None]] = []
 
         self._client = BoilerJuiceClient(
@@ -155,6 +163,21 @@ class BoilerJuiceDataUpdateCoordinator(
     def tank_ids(self) -> list[str]:
         """Return the tanks this account currently publishes."""
         return list(self._trackers)
+
+    def device_info(self, tank_id: str) -> DeviceInfo:
+        """Return the device this tank's entities belong to.
+
+        A real oil tank, not a service entry: it is a physical thing in a
+        specific place, so it takes an area and shows up as equipment.
+        """
+        state = (self.data or {}).get(tank_id, {})
+        return DeviceInfo(
+            identifiers={(DOMAIN, tank_id)},
+            name=state.get("name") or state.get("model") or "BoilerJuice Tank",
+            manufacturer=state.get("manufacturer", "BoilerJuice"),
+            model=state.get("model"),
+            configuration_url="https://www.boilerjuice.com/uk",
+        )
 
     def tracker(self, tank_id: str) -> TankTracker | None:
         """Return the tracker for `tank_id`, if it is still known."""
@@ -243,12 +266,6 @@ class BoilerJuiceDataUpdateCoordinator(
         """Close the client's session (call on unload)."""
         await self._client.async_close()
 
-    async def async_remove_storage(self) -> None:
-        """Delete this account's stored history (call when it is removed)."""
-        if self._store is not None:
-            await self._store.async_remove()
-        ir.async_delete_issue(self.hass, DOMAIN, self._storage_issue_id)
-
     async def async_reset_consumption(self, tank_id: str | None = None) -> None:
         """Reset one tank, or every tank on the account."""
         async with self._lock:
@@ -277,9 +294,9 @@ class BoilerJuiceDataUpdateCoordinator(
                 if state is not None:
                     tracker.rebase(state)
                     tracker.state.last_update = dt_util.now()
-                    published[tracker.tank_id] = tracker.decorate(
-                        dict(state), self._kwh_per_litre
-                    )
+                    updated = tracker.decorate(dict(state), self._kwh_per_litre)
+                    updated["last_level_change"] = tracker.last_level_change
+                    published[tracker.tank_id] = updated
             await self._async_persist()
             if published:
                 self.async_set_updated_data(published)
@@ -408,6 +425,32 @@ class BoilerJuiceDataUpdateCoordinator(
             )
         self._account.unassigned = None
 
+    @property
+    def _layout_issue_id(self) -> str:
+        """Return the repair issue id for a changed BoilerJuice page."""
+        return f"page_layout_changed_{self._entry_id}"
+
+    def _note_parse_failure(self) -> None:
+        """Count a page we could not read, and raise a repair if it persists."""
+        self._consecutive_parse_failures += 1
+        if self._consecutive_parse_failures != PARSE_FAILURES_BEFORE_REPAIR:
+            return
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            self._layout_issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key="page_layout_changed",
+            learn_more_url="https://github.com/willbeeching/boilerjuice/issues",
+        )
+
+    def _clear_parse_failures(self) -> None:
+        """Forget the failure run once a page parses again."""
+        if self._consecutive_parse_failures:
+            self._consecutive_parse_failures = 0
+            ir.async_delete_issue(self.hass, DOMAIN, self._layout_issue_id)
+
     async def _async_collect(self) -> tuple[list[str], dict[str, TankReading]]:
         """List the account's tanks and read the ones we want.
 
@@ -426,6 +469,9 @@ class BoilerJuiceDataUpdateCoordinator(
         except BoilerJuiceAuthError as err:
             self._client.invalidate_session()
             raise ConfigEntryAuthFailed(str(err)) from err
+        except BoilerJuiceParseError:
+            self._note_parse_failure()
+            raise
         except UpdateFailed:
             # No reading means nothing is applied and the previous state
             # stands. The coordinator logs one warning and retries.
@@ -439,6 +485,7 @@ class BoilerJuiceDataUpdateCoordinator(
         await self._async_load()
 
         listed, readings = await self._async_collect()
+        self._clear_parse_failures()
 
         await self._async_refresh_price()
 
@@ -448,13 +495,16 @@ class BoilerJuiceDataUpdateCoordinator(
             now = dt_util.now()
             self._claim_unassigned(listed)
 
+            self._last_successful_update = now
+
             published: dict[str, dict[str, Any]] = {}
             for tank_id, reading in readings.items():
                 tracker = self._tracker_for(tank_id)
                 tracker.apply(reading, now)
-                published[tank_id] = self._with_price(
-                    tracker.publish(reading, now, self._kwh_per_litre)
-                )
+                state = tracker.publish(reading, now, self._kwh_per_litre)
+                state["last_level_change"] = tracker.last_level_change
+                state["last_successful_update"] = now
+                published[tank_id] = self._with_price(state)
 
             # Tanks we could not read this time keep their previous state
             # rather than disappearing from the dashboard.
@@ -492,3 +542,10 @@ class BoilerJuiceDataUpdateCoordinator(
                 model=state.get("model"),
                 configuration_url="https://www.boilerjuice.com/uk",
             )
+
+    async def async_remove_storage(self) -> None:
+        """Delete this account's stored history and clear its repair issues."""
+        if self._store is not None:
+            await self._store.async_remove()
+        ir.async_delete_issue(self.hass, DOMAIN, self._storage_issue_id)
+        ir.async_delete_issue(self.hass, DOMAIN, self._layout_issue_id)

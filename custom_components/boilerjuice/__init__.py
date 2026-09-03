@@ -181,7 +181,9 @@ def _resolve_targets(
     """
     coordinators = _loaded_coordinators(hass)
     if not coordinators:
-        raise HomeAssistantError("No BoilerJuice accounts are currently loaded")
+        raise HomeAssistantError(
+            translation_domain=DOMAIN, translation_key="no_accounts_loaded"
+        )
 
     targets = {key: _as_list(call.data.get(key)) for key in TARGET_KEYS}
 
@@ -191,15 +193,16 @@ def _resolve_targets(
         if len(coordinators) == 1:
             return [(next(iter(coordinators.values())), None)]
         raise HomeAssistantError(
-            "Several BoilerJuice accounts are configured, so this action needs "
-            "a target (pick a BoilerJuice device, entity, area or label)"
+            translation_domain=DOMAIN, translation_key="target_required"
         )
 
     entry_ids: set[str] = set()
     for entry_id in targets["entry_id"]:
         if entry_id not in coordinators:
             raise HomeAssistantError(
-                f"No BoilerJuice integration loaded for entry_id {entry_id}"
+                translation_domain=DOMAIN,
+                translation_key="unknown_entry",
+                translation_placeholders={"entry_id": entry_id},
             )
         entry_ids.add(entry_id)
 
@@ -215,7 +218,7 @@ def _resolve_targets(
 
     if not entry_ids:
         raise HomeAssistantError(
-            "The target of this action does not include any BoilerJuice tank"
+            translation_domain=DOMAIN, translation_key="no_boilerjuice_target"
         )
 
     # A device or entity target names a specific tank; an entry id does not.
