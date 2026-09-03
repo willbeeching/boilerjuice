@@ -182,6 +182,9 @@ Other behaviour worth knowing:
   level rises, the reference resets without discarding history.
 - The reference only moves when the level moves, so a flat reading does not
   dilute the rate.
+- A tank that disappears from your account is retired, not erased: its
+  device goes but its consumption history is kept, and it resumes if the
+  tank comes back. Nothing a scraped page says will delete that history.
 - A drop spanning midnight is split between the two days by the time in
   each, not credited whole to the day it was noticed.
 - Weighting is by elapsed time, so a 23- or 25-hour daylight-saving day
@@ -364,7 +367,7 @@ Duplicate sensors were merged:
 | Symptom | Cause or fix |
 | --- | --- |
 | A "sign in again" repair appeared | Your BoilerJuice password changed, or the account was locked. Click through the repair and enter the current password |
-| A "BoilerJuice has changed its website" repair appeared | The site's layout moved. Check for an integration update; if there is not one, open a "Readings have stopped" issue |
+| A "BoilerJuice has changed its website" repair appeared | The site's layout moved, on the tank page or the tank list. Readings stop, but nothing is deleted: history is kept and devices stay. Check for an integration update; if there is not one, open a "Readings have stopped" issue |
 | A "consumption history was reset" repair appeared | The stored history could not be read and was discarded. Current readings are unaffected. Re-seed the totals with `boilerjuice.set_consumption` if you know them |
 | One tank unavailable, the others fine | That tank could not be read. Its history is safe; it becomes available again on the first successful poll. The log carries one warning per outage, not one per hour |
 | Entities unavailable | The last poll failed. Check the logs; the integration retries hourly |

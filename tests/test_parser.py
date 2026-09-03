@@ -234,3 +234,49 @@ def test_an_out_of_range_height_is_dropped() -> None:
     reading = parse_tank_page(html, "123456")
 
     assert reading.height_cm is None
+
+
+def test_an_empty_account_is_recognised_by_its_empty_state() -> None:
+    assert parse_tank_ids(load_fixture("tanks_list_empty.html")) == []
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        pytest.param(
+            '<a href="/uk/users/tanks/new">Add your first tank</a>', id="add-link"
+        ),
+        pytest.param("<p>You have no tanks yet.</p>", id="no-tanks-text"),
+        pytest.param("<p>You have not added a tank yet.</p>", id="not-added-text"),
+    ],
+)
+def test_a_recognisable_empty_account_returns_no_tanks(html: str) -> None:
+    assert parse_tank_ids(html) == []
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        pytest.param("", id="empty"),
+        pytest.param(
+            "<html><body><h1>Your account</h1></body></html>", id="redesigned"
+        ),
+        pytest.param(
+            "<html><body><div id='tanks-app'></div></body></html>", id="js-only"
+        ),
+        pytest.param(
+            "<html><body><p>Something went wrong.</p></body></html>", id="error-page"
+        ),
+    ],
+)
+def test_an_unrecognised_listing_is_not_proof_that_the_tanks_are_gone(
+    html: str,
+) -> None:
+    """The same mistake the tank page used to make, one page earlier.
+
+    An empty list is acted on: the coordinator removes devices after three
+    of them. "We no longer understand this page" must not be able to say
+    that.
+    """
+    with pytest.raises(BoilerJuiceParseError):
+        parse_tank_ids(html)

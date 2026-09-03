@@ -7,3 +7,5 @@
 ruff==0.16.6
 mypy==2.3.1
 pip-audit==2.9.0
+# scripts/check_versions.py reads the quality-scale tracker.
+PyYAML==6.0.2

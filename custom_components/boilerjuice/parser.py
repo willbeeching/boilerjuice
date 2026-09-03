@@ -33,6 +33,14 @@ _TANK_LINK_RE = re.compile(r"/uk/users/tanks/(\d+)")
 _OIL_VOLUME_RE = re.compile(r"(\d+)\s*litres?\s+(?:of\s+)?oil")
 _PRICE_RE = re.compile(r"(\d+\.\d+)\s*pence per litre")
 
+# Positive evidence that a tanks page really is showing an empty account,
+# rather than being a page we no longer recognise. One of these must be
+# present before "no tank links" is believed.
+_ADD_TANK_HREF_RE = re.compile(r"/uk/users/tanks/new")
+_NO_TANKS_RE = re.compile(
+    r"no tanks?\b|not added a tank|add (?:a |your |the )?(?:first )?tank", re.I
+)
+
 _SHAPES = ("cuboid", "horizontal_cylinder", "vertical_cylinder")
 
 
@@ -151,8 +159,25 @@ def parse_price(html: str) -> float | None:
     return price_pence(match.group(1))
 
 
+def looks_like_empty_tank_list(soup: BeautifulSoup) -> bool:
+    """Return True when the page positively says the account has no tanks."""
+    if soup.find("a", href=_ADD_TANK_HREF_RE) is not None:
+        return True
+    return _NO_TANKS_RE.search(soup.get_text(" ")) is not None
+
+
 def parse_tank_ids(html: str) -> list[str]:
-    """Return the validated tank ids linked from the tanks listing page."""
+    """Return the validated tank ids linked from the tanks listing page.
+
+    An empty list means the account really has no tanks, and only that.
+    A page with no recognised tank links and no recognisable empty state
+    raises BoilerJuiceParseError instead, because "we no longer understand
+    this page" and "you have no tanks" are not the same fact, and the
+    coordinator acts on the second by removing devices.
+
+    This is the same mistake the tank page used to make, one page earlier:
+    treating an unreadable response as a confident measurement of nothing.
+    """
     soup = BeautifulSoup(html, "html.parser")
     tank_ids: list[str] = []
     for link in soup.find_all("a", href=_TANK_LINK_RE):
@@ -163,7 +188,14 @@ def parse_tank_ids(html: str) -> list[str]:
         tank_id = validate_tank_id(match.group(1))
         if tank_id is not None and tank_id not in tank_ids:
             tank_ids.append(tank_id)
-    return tank_ids
+
+    if tank_ids or looks_like_empty_tank_list(soup):
+        return tank_ids
+
+    raise BoilerJuiceParseError(
+        "The BoilerJuice tanks page listed no tanks and did not look like an "
+        "empty account; refusing to treat it as proof that the tanks are gone"
+    )
 
 
 def _first_input_value(

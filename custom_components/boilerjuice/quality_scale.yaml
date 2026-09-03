@@ -52,12 +52,23 @@ rules:
     status: done
     comment: README documents both actions, including the persistence of the
       manual daily override.
+  docs-conditions:
+    status: exempt
+    comment: >-
+      The integration contributes no conditions. Home Assistant's built-in
+      numeric-state and state conditions read these sensors directly.
   docs-high-level-description:
     status: done
   docs-installation-instructions:
     status: done
   docs-removal-instructions:
     status: done
+  docs-triggers:
+    status: exempt
+    comment: >-
+      The integration contributes no triggers. Everything it publishes is a
+      sensor, and the built-in numeric-state and state triggers cover the
+      useful cases - see the automation examples in the README.
   entity-event-setup:
     status: exempt
     comment: Polling integration; entities subscribe only to the coordinator.
@@ -137,23 +148,6 @@ rules:
   discovery:
     status: exempt
     comment: Cloud polling.
-  entity-triggers:
-    status: exempt
-    comment: >-
-      The integration contributes no triggers. Everything it publishes is a
-      sensor, and Home Assistant's own numeric-state and state triggers cover
-      the useful cases (see the automation examples in the README).
-  entity-conditions:
-    status: exempt
-    comment: >-
-      The integration contributes no conditions, for the same reason: the
-      built-in numeric-state and state conditions read these sensors
-      directly.
-  entity-actions:
-    status: exempt
-    comment: >-
-      The two account-level actions are registered in async_setup; there are
-      no per-entity actions to contribute.
   docs-data-update:
     status: done
   docs-examples:
@@ -208,9 +202,12 @@ rules:
   stale-devices:
     status: done
     comment: >-
-      A tank the user excludes is removed at once and keeps its history; a
-      tank BoilerJuice stops listing is removed after three consecutive
-      authoritative listings agree, and then loses its history too.
+      A tank the user excludes is removed at once; a tank BoilerJuice stops
+      listing is removed after three consecutive authoritative listings
+      agree. Either way it is retired rather than erased: the device goes,
+      the history stays, and it resumes if the tank returns. A listing page
+      we do not recognise is refused outright rather than read as "no
+      tanks".
 
   # --- Platinum ---
   async-dependency:

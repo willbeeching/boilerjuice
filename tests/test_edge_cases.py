@@ -96,9 +96,13 @@ def test_a_multi_valued_attribute_is_read_as_one_string() -> None:
 
 
 def test_a_tank_link_without_a_usable_id_is_skipped() -> None:
+    """The empty state still has to be recognisable for the answer to count."""
     from custom_components.boilerjuice.parser import parse_tank_ids
 
-    html = '<a href="/uk/users/tanks/notanumber/edit">Nope</a>'
+    html = (
+        '<a href="/uk/users/tanks/notanumber/edit">Nope</a>'
+        '<a href="/uk/users/tanks/new">Add a tank</a>'
+    )
 
     assert parse_tank_ids(html) == []
 

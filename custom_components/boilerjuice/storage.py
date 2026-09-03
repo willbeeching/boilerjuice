@@ -245,6 +245,11 @@ class AccountState:
     """Everything one account's document holds."""
 
     tanks: dict[str, ConsumptionState] = field(default_factory=dict)
+    # Tanks we have stopped tracking but whose history we keep. Nothing a
+    # scraped page says should irreversibly delete a user's data, so a tank
+    # that goes away is retired rather than erased, and picks its history
+    # back up if it returns.
+    retired: set[str] = field(default_factory=set)
     # How many consecutive authoritative tank listings have not mentioned a
     # tank we know about. A failed listing never counts, so an outage cannot
     # remove anybody's devices.
@@ -268,6 +273,12 @@ def account_from_document(document: Any) -> AccountState:
     if not isinstance(missing, dict):
         raise InvalidStoredData("missing must be an object")
 
+    retired = document.get("retired", [])
+    if not isinstance(retired, list) or not all(
+        isinstance(item, str) for item in retired
+    ):
+        raise InvalidStoredData("retired must be a list of tank ids")
+
     unassigned = document.get("unassigned")
 
     return AccountState(
@@ -276,6 +287,7 @@ def account_from_document(document: Any) -> AccountState:
             tank_id: int(_number(count, low=0, high=MAX_HISTORY_ROWS))
             for tank_id, count in missing.items()
         },
+        retired=set(retired),
         unassigned=None if unassigned is None else state_from_document(unassigned),
     )
 
@@ -288,6 +300,7 @@ def document_from_account(account: AccountState) -> dict[str, Any]:
             for tank_id, state in account.tanks.items()
         },
         "missing": dict(account.missing),
+        "retired": sorted(account.retired),
         "unassigned": (
             None
             if account.unassigned is None

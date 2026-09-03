@@ -222,6 +222,9 @@ class BoilerJuiceDataUpdateCoordinator(
         """Return (creating if needed) the tracker for `tank_id`."""
         tracker = self._trackers.get(tank_id)
         if tracker is None:
+            # Tracking it again un-retires it, and it resumes the history it
+            # was retired with.
+            self._account.retired.discard(tank_id)
             state = self._account.tanks.get(tank_id)
             if state is None:
                 state = ConsumptionState()
@@ -257,7 +260,8 @@ class BoilerJuiceDataUpdateCoordinator(
 
         self._account = account
         for tank_id in list(account.tanks):
-            self._tracker_for(tank_id)
+            if tank_id not in account.retired:
+                self._tracker_for(tank_id)
         self._loaded = True
 
         if problem is None:
@@ -421,27 +425,29 @@ class BoilerJuiceDataUpdateCoordinator(
             raise failures[0]
         return readings
 
-    def _reconcile(self, wanted: list[str]) -> list[tuple[str, bool]]:
-        """Decide which tracked tanks to drop, and whether to keep history.
+    def _reconcile(self, wanted: list[str]) -> list[str]:
+        """Decide which tracked tanks to stop tracking.
 
-        Two different things make a tank stop belonging here, and they
-        deserve different treatment:
+        Two different things make a tank stop belonging here, and they differ
+        only in how quickly we act:
 
         - The user excluded it, or pinned a different one. That is a
-          deliberate choice made just now, so act on it immediately and keep
-          its stored history in case they change their mind. Whether
+          deliberate choice made just now, so act on it immediately. Whether
           BoilerJuice still lists it is irrelevant, which is why this is
           decided from the configuration rather than from the listing.
         - BoilerJuice stopped listing a tank the user did select. That could
           be an account change or a bad page, so wait for three consecutive
-          authoritative listings to agree, then drop it and its history.
+          authoritative listings to agree.
+
+        Either way the tank is retired, not erased: its device goes but its
+        history stays, and it picks that history back up if it returns. A
+        scraped page saying a tank is absent is not good enough evidence to
+        delete somebody's consumption record.
 
         Filtering used to be applied only when fetching, so an excluded tank
         kept its tracker, its device and its entities for ever.
-
-        Returns (tank id, drop history) pairs.
         """
-        removals: list[tuple[str, bool]] = []
+        removals: list[str] = []
         wanted_set = set(wanted)
         selected = self._selected()
 
@@ -455,7 +461,7 @@ class BoilerJuiceDataUpdateCoordinator(
                     "A tank is no longer included in this account's "
                     "configuration; removing its device but keeping its history"
                 )
-                removals.append((tank_id, False))
+                removals.append(tank_id)
                 continue
 
             seen_missing = self._account.missing.get(tank_id, 0) + 1
@@ -463,20 +469,19 @@ class BoilerJuiceDataUpdateCoordinator(
             if seen_missing >= MISSING_LISTINGS_BEFORE_REMOVAL:
                 _LOGGER.info(
                     "A tank has been absent from %d consecutive BoilerJuice "
-                    "listings; removing it",
+                    "listings; removing its device but keeping its history",
                     MISSING_LISTINGS_BEFORE_REMOVAL,
                 )
-                removals.append((tank_id, True))
+                removals.append(tank_id)
 
         return removals
 
-    def _forget(self, tank_id: str, *, drop_history: bool) -> None:
-        """Stop tracking a tank and remove its device."""
+    def _forget(self, tank_id: str) -> None:
+        """Retire a tank: drop its device and tracker, keep its history."""
         self._trackers.pop(tank_id, None)
         self._account.missing.pop(tank_id, None)
         self._forget_health(tank_id)
-        if drop_history:
-            self._account.tanks.pop(tank_id, None)
+        self._account.retired.add(tank_id)
 
         if not self._entry_id:
             return
@@ -643,8 +648,8 @@ class BoilerJuiceDataUpdateCoordinator(
             # A tank we could not read keeps its internal history but is not
             # republished, so its entities go unavailable rather than showing
             # a stale reading that looks current.
-            for tank_id, drop_history in self._reconcile(wanted):
-                self._forget(tank_id, drop_history=drop_history)
+            for tank_id in self._reconcile(wanted):
+                self._forget(tank_id)
                 published.pop(tank_id, None)
 
             await self._async_persist()

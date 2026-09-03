@@ -575,3 +575,104 @@ async def test_unloading_two_accounts_at_once_is_clean(
 
     assert results == [True, True]
     assert not hass.services.has_service(DOMAIN, SERVICE_RESET_CONSUMPTION)
+
+
+async def test_a_redesigned_listing_page_cannot_erase_the_history(
+    hass: HomeAssistant, account: MockConfigEntry, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """An authenticated page we do not recognise is not proof of anything.
+
+    It used to parse to "no tanks", which the coordinator acted on: after
+    three polls both tanks and all their consumption history were gone, and
+    no repair was raised because an empty list looked like a clean parse.
+    """
+    from custom_components.boilerjuice.coordinator import (
+        PARSE_FAILURES_BEFORE_REPAIR,
+    )
+    from homeassistant.helpers import issue_registry as ir
+
+    coordinator = coordinator_of(account)
+    await coordinator.async_set_consumption(40.0, tank_id=FIRST)
+    await hass.async_block_till_done()
+
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(LOGIN_URL, text=load_fixture("login.html"))
+    aioclient_mock.post(LOGIN_URL, text=SIGNED_IN_PAGE)
+    # Signed in, HTTP 200, and nothing we recognise.
+    aioclient_mock.get(
+        TANKS_URL,
+        text="<html><body><h1>Your tanks</h1><div id='app'></div></body></html>",
+    )
+    aioclient_mock.get(PRICE_URL, text=PRICE_PAGE)
+
+    for _ in range(PARSE_FAILURES_BEFORE_REPAIR + 2):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    assert not coordinator.last_update_success
+    # Both tanks, and the history, are untouched.
+    assert sorted(coordinator.tank_ids) == [FIRST, SECOND]
+    assert tracker_of(coordinator, FIRST).total_litres == 40.0
+    assert tank_device(hass, account, FIRST) is not None
+    # And the user is told the site changed, rather than left guessing.
+    assert (
+        ir.async_get(hass).async_get_issue(
+            DOMAIN, f"page_layout_changed_{account.entry_id}"
+        )
+        is not None
+    )
+
+
+async def test_a_removed_tank_keeps_its_history_and_resumes_it(
+    hass: HomeAssistant, account: MockConfigEntry, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Retire, do not erase: a scraped absence must not delete user data."""
+    from custom_components.boilerjuice.coordinator import (
+        MISSING_LISTINGS_BEFORE_REMOVAL,
+    )
+
+    coordinator = coordinator_of(account)
+    await coordinator.async_set_consumption(90.0, tank_id=SECOND)
+    await hass.async_block_till_done()
+
+    mock_account(aioclient_mock, ONE_TANK)
+    for _ in range(MISSING_LISTINGS_BEFORE_REMOVAL):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    assert coordinator.tank_ids == [FIRST]
+    assert tank_device(hass, account, SECOND) is None
+    # Retired, not erased.
+    assert SECOND in coordinator._account.retired
+    assert coordinator._account.tanks[SECOND].total_litres == 90.0
+
+    # It comes back, and picks up where it left off.
+    mock_account(aioclient_mock, TWO_TANKS)
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    assert sorted(coordinator.tank_ids) == [FIRST, SECOND]
+    assert tracker_of(coordinator, SECOND).total_litres == 90.0
+    assert SECOND not in coordinator._account.retired
+
+
+async def test_a_retired_tank_is_not_resurrected_by_a_restart(
+    hass: HomeAssistant, account: MockConfigEntry, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Keeping the history must not mean re-creating the device on reload."""
+    from custom_components.boilerjuice.coordinator import (
+        MISSING_LISTINGS_BEFORE_REMOVAL,
+    )
+
+    coordinator = coordinator_of(account)
+    mock_account(aioclient_mock, ONE_TANK)
+    for _ in range(MISSING_LISTINGS_BEFORE_REMOVAL):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+    assert coordinator.tank_ids == [FIRST]
+
+    await hass.config_entries.async_reload(account.entry_id)
+    await hass.async_block_till_done()
+
+    assert coordinator_of(account).tank_ids == [FIRST]
+    assert tank_device(hass, account, SECOND) is None
