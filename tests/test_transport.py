@@ -18,9 +18,11 @@ from custom_components.boilerjuice.const import (
 from custom_components.boilerjuice.coordinator import (
     STORAGE_KEY,
     STORAGE_VERSION,
+    BoilerJuiceDataUpdateCoordinator,
+)
+from custom_components.boilerjuice.errors import (
     BoilerJuiceAuthError,
     BoilerJuiceConnectionError,
-    BoilerJuiceDataUpdateCoordinator,
 )
 
 from .helpers import (

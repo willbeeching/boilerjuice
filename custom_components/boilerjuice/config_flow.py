@@ -13,12 +13,9 @@ from homeassistant.data_entry_flow import AbortFlow, FlowResult
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import CONF_KWH_PER_LITRE, CONF_TANK_ID, DEFAULT_KWH_PER_LITRE, DOMAIN
-from .coordinator import (
-    BoilerJuiceAuthError,
-    BoilerJuiceConnectionError,
-    BoilerJuiceDataUpdateCoordinator,
-    validate_tank_id,
-)
+from .coordinator import BoilerJuiceDataUpdateCoordinator
+from .errors import BoilerJuiceAuthError, BoilerJuiceConnectionError
+from .parser import validate_tank_id
 
 _LOGGER = logging.getLogger(__name__)
 

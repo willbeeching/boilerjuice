@@ -1,4 +1,4 @@
-"""The consumption maths: allocation across days, rolling rate, seasons."""
+"""The consumption maths, tested as the pure functions they now are."""
 
 from __future__ import annotations
 
@@ -6,47 +6,42 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pytest
-from homeassistant.core import HomeAssistant
 
-from custom_components.boilerjuice.coordinator import (
-    CONSUMPTION_ROLLING_DAYS,
-    BoilerJuiceDataUpdateCoordinator,
-)
-
-from .helpers import make_entry
+from custom_components.boilerjuice import consumption
+from custom_components.boilerjuice.models import TankReading
 
 LONDON = ZoneInfo("Europe/London")
 
 
-@pytest.fixture
-async def engine(hass: HomeAssistant) -> BoilerJuiceDataUpdateCoordinator:
-    """A coordinator used only for its consumption maths."""
-    coordinator = BoilerJuiceDataUpdateCoordinator(hass, make_entry(hass))
-    yield coordinator
-    await coordinator.async_close()
+def at(day: int, hour: int = 12, month: int = 1) -> datetime:
+    return datetime(2026, month, day, hour, tzinfo=LONDON)
 
 
-def days(coordinator) -> dict[str, float]:
-    return coordinator._calculate_daily_totals_from_history()
+def midnight(date_str: str) -> datetime:
+    return datetime.fromisoformat(date_str).replace(tzinfo=LONDON)
 
 
-async def test_a_drop_seen_within_a_day_lands_on_one_day(engine) -> None:
-    engine._last_update = datetime(2026, 1, 10, 6, 0, tzinfo=LONDON)
-    now = datetime(2026, 1, 10, 18, 0, tzinfo=LONDON)
-
-    engine._spread_consumption_over_days(12.0, now)
-
-    assert days(engine) == {"2026-01-10": 12.0}
+# --- allocation -----------------------------------------------------------
 
 
-async def test_a_drop_spanning_days_is_shared_by_time_in_each_day(engine) -> None:
+def test_a_drop_seen_within_a_day_lands_on_one_day() -> None:
+    allocated = consumption.allocate_over_days(12.0, at(10, 6), at(10, 18))
+
+    assert consumption.daily_totals(allocated) == {"2026-01-10": 12.0}
+
+
+def test_a_drop_with_no_baseline_lands_on_now() -> None:
+    allocated = consumption.allocate_over_days(12.0, None, at(10, 18))
+
+    assert consumption.daily_totals(allocated) == {"2026-01-10": 12.0}
+
+
+def test_a_drop_spanning_days_is_shared_by_time_in_each_day() -> None:
     """Oil burnt while Home Assistant was down belongs to the days it spanned."""
-    engine._last_update = datetime(2026, 1, 10, 12, 0, tzinfo=LONDON)
-    now = datetime(2026, 1, 13, 12, 0, tzinfo=LONDON)
+    allocated = consumption.daily_totals(
+        consumption.allocate_over_days(120.0, at(10), at(13))
+    )
 
-    engine._spread_consumption_over_days(120.0, now)
-
-    allocated = days(engine)
     assert allocated == {
         "2026-01-10": pytest.approx(20.0),
         "2026-01-11": pytest.approx(40.0),
@@ -56,98 +51,147 @@ async def test_a_drop_spanning_days_is_shared_by_time_in_each_day(engine) -> Non
     assert sum(allocated.values()) == pytest.approx(120.0)
 
 
-async def test_the_shares_still_sum_across_a_spring_dst_boundary(engine) -> None:
-    """The clocks going forward shortens a day; the total must still balance."""
-    engine._last_update = datetime(2026, 3, 28, 12, 0, tzinfo=LONDON)
-    now = datetime(2026, 3, 30, 12, 0, tzinfo=LONDON)
+@pytest.mark.parametrize(
+    ("month", "start_day", "end_day"),
+    [
+        pytest.param(3, 28, 30, id="clocks-forward"),
+        pytest.param(10, 24, 26, id="clocks-back"),
+    ],
+)
+def test_the_shares_still_sum_across_a_dst_boundary(
+    month: int, start_day: int, end_day: int
+) -> None:
+    """A 23- or 25-hour day must not gain or lose oil."""
+    allocated = consumption.daily_totals(
+        consumption.allocate_over_days(
+            96.0, at(start_day, month=month), at(end_day, month=month)
+        )
+    )
 
-    engine._spread_consumption_over_days(96.0, now)
-
-    allocated = days(engine)
-    assert sorted(allocated) == ["2026-03-28", "2026-03-29", "2026-03-30"]
+    assert len(allocated) == 3
     assert sum(allocated.values()) == pytest.approx(96.0)
 
 
-async def test_the_shares_still_sum_across_an_autumn_dst_boundary(engine) -> None:
-    """The clocks going back lengthens a day; the total must still balance."""
-    engine._last_update = datetime(2026, 10, 24, 12, 0, tzinfo=LONDON)
-    now = datetime(2026, 10, 26, 12, 0, tzinfo=LONDON)
+def test_a_clock_that_went_backwards_lands_on_one_day() -> None:
+    allocated = consumption.allocate_over_days(5.0, at(12), at(10))
 
-    engine._spread_consumption_over_days(96.0, now)
-
-    allocated = days(engine)
-    assert sorted(allocated) == ["2026-10-24", "2026-10-25", "2026-10-26"]
-    assert sum(allocated.values()) == pytest.approx(96.0)
+    assert consumption.daily_totals(allocated) == {"2026-01-10": 5.0}
 
 
-async def test_a_clock_that_went_backwards_lands_on_one_day(engine) -> None:
-    engine._last_update = datetime(2026, 1, 12, 12, 0, tzinfo=LONDON)
-    now = datetime(2026, 1, 10, 12, 0, tzinfo=LONDON)
-
-    engine._spread_consumption_over_days(5.0, now)
-
-    assert days(engine) == {"2026-01-10": 5.0}
+# --- rolling rate ---------------------------------------------------------
 
 
-async def test_the_rolling_rate_averages_complete_days_only(engine) -> None:
+def test_the_rolling_rate_averages_complete_days_only() -> None:
     """Today is still filling, so including it would drag the rate down."""
-    engine._consumption_history_with_dates = [
-        (datetime(2026, 1, 8, 0, 0, tzinfo=LONDON), 20.0),
-        (datetime(2026, 1, 9, 0, 0, tzinfo=LONDON), 30.0),
-        (datetime(2026, 1, 10, 3, 0, tzinfo=LONDON), 2.0),
-    ]
+    totals = consumption.daily_totals(
+        [(at(8, 0), 20.0), (at(9, 0), 30.0), (at(10, 3), 2.0)]
+    )
 
-    engine._refresh_rolling_average(datetime(2026, 1, 10, 6, 0, tzinfo=LONDON))
+    window = consumption.rolling_window(totals, at(10, 6))
 
-    assert engine.daily_consumption_usable_liters == 25.0
+    assert consumption.average(window) == 25.0
 
 
-async def test_the_rolling_rate_uses_today_when_it_is_all_there_is(engine) -> None:
-    engine._consumption_history_with_dates = [
-        (datetime(2026, 1, 10, 3, 0, tzinfo=LONDON), 4.0),
-    ]
+def test_the_rolling_rate_uses_today_when_it_is_all_there_is() -> None:
+    totals = consumption.daily_totals([(at(10, 3), 4.0)])
 
-    engine._refresh_rolling_average(datetime(2026, 1, 10, 6, 0, tzinfo=LONDON))
-
-    assert engine.daily_consumption_usable_liters == 4.0
+    assert consumption.average(consumption.rolling_window(totals, at(10, 6))) == 4.0
 
 
-async def test_the_rolling_window_is_bounded(engine) -> None:
-    engine._consumption_history_with_dates = [
-        (datetime(2026, 1, day, 0, 0, tzinfo=LONDON), float(day))
-        for day in range(1, 21)
-    ]
+def test_the_rolling_window_is_bounded() -> None:
+    totals = consumption.daily_totals(
+        [(at(day, 0), float(day)) for day in range(1, 21)]
+    )
 
-    engine._refresh_rolling_average(datetime(2026, 2, 1, 0, 0, tzinfo=LONDON))
+    window = consumption.rolling_window(totals, datetime(2026, 2, 1, tzinfo=LONDON))
 
-    assert len(engine._daily_consumption_history) == CONSUMPTION_ROLLING_DAYS
-    assert engine._daily_consumption_history == [
-        14.0,
-        15.0,
-        16.0,
-        17.0,
-        18.0,
-        19.0,
-        20.0,
-    ]
+    assert window == [14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0]
 
 
-async def test_no_history_means_a_zero_rate(engine) -> None:
-    engine._refresh_rolling_average(datetime(2026, 1, 10, 6, 0, tzinfo=LONDON))
-
-    assert engine.daily_consumption_usable_liters == 0.0
+def test_no_history_means_a_zero_rate() -> None:
+    assert consumption.average(consumption.rolling_window({}, at(10))) == 0.0
 
 
-async def test_seasonal_stats_group_by_season_and_month(engine) -> None:
-    engine._consumption_history_with_dates = [
-        (datetime(2026, 1, 5, 0, 0, tzinfo=LONDON), 30.0),
-        (datetime(2026, 1, 6, 0, 0, tzinfo=LONDON), 20.0),
-        (datetime(2026, 4, 5, 0, 0, tzinfo=LONDON), 8.0),
-        (datetime(2026, 7, 5, 0, 0, tzinfo=LONDON), 2.0),
-        (datetime(2026, 10, 5, 0, 0, tzinfo=LONDON), 12.0),
-    ]
+def test_history_is_trimmed_to_just_over_a_year() -> None:
+    totals = {"2024-01-01": 10.0, "2026-01-09": 5.0}
 
-    stats = engine._calculate_seasonal_stats()
+    trimmed = consumption.trim_history(totals, at(10), midnight)
+
+    assert [date.date().isoformat() for date, _ in trimmed] == ["2026-01-09"]
+
+
+# --- transitions ----------------------------------------------------------
+
+
+def reading(**kwargs) -> TankReading:
+    return TankReading(tank_id="123456", **kwargs)
+
+
+def test_a_volume_drop_is_consumption() -> None:
+    transition = consumption.classify(2000, 80, reading(volume_litres=1975))
+
+    assert transition.is_consumption
+    assert transition.litres_consumed == 25
+    assert transition.source == "volume"
+
+
+def test_a_volume_rise_is_a_refill() -> None:
+    transition = consumption.classify(500, 20, reading(volume_litres=2375))
+
+    assert transition.is_refill
+    assert not transition.is_consumption
+
+
+def test_an_unchanged_volume_is_neither() -> None:
+    transition = consumption.classify(2000, 80, reading(volume_litres=2000))
+
+    assert not transition.is_consumption
+    assert not transition.is_refill
+
+
+def test_the_level_is_used_when_there_is_no_volume() -> None:
+    transition = consumption.classify(
+        None, 80, reading(level_percentage=79, capacity_litres=2500)
+    )
+
+    assert transition.litres_consumed == pytest.approx(25.0)
+    assert transition.source == "level"
+
+
+def test_a_level_rise_is_a_refill() -> None:
+    transition = consumption.classify(
+        None, 20, reading(level_percentage=95, capacity_litres=2500)
+    )
+
+    assert transition.is_refill
+
+
+def test_a_level_without_a_capacity_yields_nothing() -> None:
+    """No capacity means no way to turn a percentage into litres."""
+    transition = consumption.classify(None, 80, reading(level_percentage=40))
+
+    assert transition == consumption.UNCHANGED
+
+
+def test_no_previous_reference_yields_nothing() -> None:
+    transition = consumption.classify(None, None, reading(volume_litres=1000))
+
+    assert transition == consumption.UNCHANGED
+
+
+# --- seasons --------------------------------------------------------------
+
+
+def test_seasonal_stats_group_by_season_and_month() -> None:
+    totals = {
+        "2026-01-05": 30.0,
+        "2026-01-06": 20.0,
+        "2026-04-05": 8.0,
+        "2026-07-05": 2.0,
+        "2026-10-05": 12.0,
+    }
+
+    stats = consumption.seasonal_stats(totals, at(10), midnight)
 
     assert stats["winter_avg"] == 25.0
     assert stats["winter_min"] == 20.0
@@ -156,53 +200,46 @@ async def test_seasonal_stats_group_by_season_and_month(engine) -> None:
     assert stats["summer_avg"] == 2.0
     assert stats["autumn_avg"] == 12.0
     assert stats["monthly"]["January"] == 25.0
+    assert stats["current_season"]["name"] == "winter"
 
 
-async def test_seasonal_stats_are_empty_without_history(engine) -> None:
-    assert engine._calculate_seasonal_stats() == {}
+def test_seasonal_stats_are_empty_without_history() -> None:
+    assert consumption.seasonal_stats({}, at(10), midnight) == {}
+
+
+def test_the_current_season_is_blank_when_it_has_no_data() -> None:
+    stats = consumption.seasonal_stats({"2026-07-05": 2.0}, at(10), midnight)
+
+    assert stats["current_season"]["name"] == ""
 
 
 @pytest.mark.parametrize(
     ("month", "season"),
     [(1, "winter"), (4, "spring"), (7, "summer"), (10, "autumn"), (12, "winter")],
 )
-async def test_season_lookup(engine, month: int, season: str) -> None:
-    assert engine._get_season(datetime(2026, month, 15, tzinfo=LONDON)) == season
+def test_season_lookup(month: int, season: str) -> None:
+    assert consumption.season_for(datetime(2026, month, 15, tzinfo=LONDON)) == season
 
 
-async def test_days_until_empty_prefers_measured_consumption(engine) -> None:
-    engine._daily_consumption_usable_liters = 10.0
-
-    assert engine._calculate_days_until_empty({"current_volume_litres": 250}) == 25.0
+# --- days until empty -----------------------------------------------------
 
 
-async def test_days_until_empty_falls_back_to_the_real_capacity(engine) -> None:
+def test_days_until_empty_prefers_measured_consumption() -> None:
+    assert consumption.days_until_empty(250, 2500, 10, 10.0) == 25.0
+
+
+def test_days_until_empty_falls_back_to_the_real_capacity() -> None:
     """The fallback assumes 2% of capacity a day, not a hard-coded 510 L tank."""
-    assert (
-        engine._calculate_days_until_empty(
-            {
-                "current_volume_litres": 500,
-                "capacity_litres": 5000,
-                "total_level_percentage": 10,
-            }
-        )
-        == 5.0
-    )
+    assert consumption.days_until_empty(500, 5000, 10, 0.0) == 5.0
 
 
-async def test_days_until_empty_is_unknown_without_a_volume(engine) -> None:
-    assert engine._calculate_days_until_empty({"capacity_litres": 2500}) is None
+def test_days_until_empty_is_unknown_without_a_volume() -> None:
+    assert consumption.days_until_empty(None, 2500, 50, 0.0) is None
 
 
-async def test_days_until_empty_is_unknown_without_a_capacity(engine) -> None:
-    assert engine._calculate_days_until_empty({"current_volume_litres": 500}) is None
+def test_days_until_empty_is_unknown_without_a_capacity() -> None:
+    assert consumption.days_until_empty(500, None, 50, 0.0) is None
 
 
-async def test_naive_stored_timestamps_are_localized_not_reinterpreted(engine) -> None:
-    """Pre-timezone installs wrote naive local wall-clock times."""
-    naive = datetime(2026, 1, 10, 12, 0)
-
-    localized = engine._as_local(naive)
-
-    assert localized.tzinfo is not None
-    assert localized.replace(tzinfo=None) == naive
+def test_days_until_empty_is_unknown_at_zero_percent() -> None:
+    assert consumption.days_until_empty(500, 2500, 0, 0.0) is None

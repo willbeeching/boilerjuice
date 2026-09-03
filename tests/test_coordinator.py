@@ -21,10 +21,8 @@ from custom_components.boilerjuice.const import (
     LOGIN_URL,
     TANKS_URL,
 )
-from custom_components.boilerjuice.coordinator import (
-    BoilerJuiceAuthError,
-    BoilerJuiceDataUpdateCoordinator,
-)
+from custom_components.boilerjuice.coordinator import BoilerJuiceDataUpdateCoordinator
+from custom_components.boilerjuice.errors import BoilerJuiceAuthError
 
 from .helpers import (
     SIGNED_IN_PAGE,
