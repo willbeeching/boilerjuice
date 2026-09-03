@@ -148,7 +148,7 @@ async def test_an_unreadable_page_cannot_move_consumption(
     assert not coordinator.last_update_success
     assert coordinator.total_consumption_usable_liters == 0.0
     assert coordinator.total_consumption_usable_kwh == 0.0
-    assert coordinator.daily_consumption_usable_liters == 0.0
+    assert coordinator.daily_consumption_usable_liters is None
     # The last good reading is still what consumers see.
     assert coordinator.data == good_data
 

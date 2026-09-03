@@ -1,63 +1,133 @@
-"""Stored consumption must survive restarts and refuse to poison the totals."""
+"""Stored consumption: per-account, versioned, validated, and recoverable."""
 
 from __future__ import annotations
 
+import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
-from custom_components.boilerjuice.coordinator import (
-    STORAGE_KEY,
+from custom_components.boilerjuice.const import DOMAIN
+from custom_components.boilerjuice.coordinator import BoilerJuiceDataUpdateCoordinator
+from custom_components.boilerjuice.storage import (
+    LEGACY_STORAGE_KEY,
+    LEGACY_STORAGE_VERSION,
     STORAGE_VERSION,
-    BoilerJuiceDataUpdateCoordinator,
+    ConsumptionState,
+    ConsumptionStore,
+    InvalidStoredData,
+    document_from_state,
+    state_from_document,
 )
 
 from .helpers import make_entry, mock_site, tank_page
 
-STORE = f"{STORAGE_VERSION}.{STORAGE_KEY}"
+
+def entry_key(entry) -> str:
+    return f"{DOMAIN}.{entry.entry_id}"
 
 
 def stored(hass_storage, key: str) -> dict:
-    return hass_storage[STORAGE_KEY]["data"][key]
+    return hass_storage[key]["data"]
 
 
-async def test_a_restart_resumes_from_the_stored_totals(
-    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, hass_storage
-) -> None:
-    entry = make_entry(hass)
-    hass_storage[STORAGE_KEY] = {
-        "version": STORAGE_VERSION,
-        "data": {
-            entry.entry_id: {
-                "total_consumption_liters": 340.0,
-                "total_consumption_kwh": 3519.0,
-                "daily_consumption_liters": 12.0,
-                "reference_volume": 2000.0,
-                "reference_level": 80.0,
-                "consumption_history": [12.0, 12.0],
-                "consumption_history_with_dates": [],
-                "last_update": "2026-01-01T00:00:00+00:00",
-            }
-        },
+def legacy_document(**overrides) -> dict:
+    document = {
+        "total_consumption_liters": 340.0,
+        "total_consumption_kwh": 3519.0,
+        "daily_consumption_liters": 12.0,
+        "reference_volume": 2000,
+        "reference_level": 80.0,
+        "consumption_history": [12.0, 12.0],
+        "consumption_history_with_dates": [
+            ["2026-01-08T00:00:00+00:00", 12.0],
+            ["2026-01-09T00:00:00+00:00", 12.0],
+        ],
+        "last_update": "2026-01-09T06:00:00+00:00",
     }
-    coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
-
-    try:
-        mock_site(aioclient_mock, tank_html=tank_page(percentage=79, litres=1950))
-        await coordinator.async_refresh()
-        await hass.async_block_till_done()
-
-        # 340 carried over, plus the 50 L drop seen on this poll.
-        assert coordinator.total_consumption_usable_liters == 390.0
-    finally:
-        await coordinator.async_close()
+    document.update(overrides)
+    return document
 
 
-async def test_two_accounts_do_not_overwrite_each_others_totals(
+# --- document validation --------------------------------------------------
+
+
+def test_a_state_round_trips_through_its_document() -> None:
+    state = ConsumptionState(total_litres=42.5, daily_litres=3.0, reference_level=61.0)
+
+    assert state_from_document(document_from_state(state)) == state
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        pytest.param("not an object", id="not-an-object"),
+        pytest.param({"total_litres": "lots"}, id="total-not-a-number"),
+        pytest.param({"total_litres": -5}, id="negative-total"),
+        pytest.param({"total_litres": float("nan")}, id="nan-total"),
+        pytest.param({"total_litres": float("inf")}, id="infinite-total"),
+        pytest.param({"total_litres": 1e12}, id="absurd-total"),
+        pytest.param({"reference_level": 140}, id="impossible-level"),
+        pytest.param({"reference_volume": -1}, id="negative-volume"),
+        pytest.param({"last_update": "yesterday"}, id="unreadable-timestamp"),
+        pytest.param({"history": "some"}, id="history-not-a-list"),
+        pytest.param({"history": [["2026-01-01T00:00:00+00:00"]]}, id="short-row"),
+        pytest.param({"history": [["nope", 1.0]]}, id="bad-row-timestamp"),
+        pytest.param(
+            {"history": [["2026-01-01T00:00:00+00:00", "x"]]}, id="bad-row-litres"
+        ),
+        pytest.param({"daily_litres": True}, id="boolean-rate"),
+    ],
+)
+def test_an_untrustworthy_document_is_refused(document: object) -> None:
+    with pytest.raises(InvalidStoredData):
+        state_from_document(document)
+
+
+def test_history_is_sorted_on_the_way_in() -> None:
+    state = state_from_document(
+        {
+            "history": [
+                ["2026-01-09T00:00:00+00:00", 2.0],
+                ["2026-01-08T00:00:00+00:00", 1.0],
+            ]
+        }
+    )
+
+    assert [litres for _, litres in state.history] == [1.0, 2.0]
+
+
+def test_an_over_long_history_keeps_the_newest_rows() -> None:
+    state = state_from_document(
+        {
+            "history": [
+                [f"2026-01-01T00:00:{second:02d}+00:00", float(second)]
+                for second in range(60)
+            ]
+            * 30
+        }
+    )
+
+    assert len(state.history) == 1000
+
+
+def test_a_naive_stored_timestamp_is_localized_not_reinterpreted() -> None:
+    """Pre-timezone installs wrote naive local wall-clock times."""
+    state = state_from_document({"last_update": "2026-01-10T12:00:00"})
+
+    assert state.last_update.tzinfo is not None
+    assert state.last_update.replace(tzinfo=None).hour == 12
+
+
+# --- per-entry storage ----------------------------------------------------
+
+
+async def test_each_account_writes_its_own_document(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, hass_storage
 ) -> None:
+    """The shared document is what let one account drop another's history."""
     first = make_entry(hass, email="one@example.com", tank_id="111111")
     second = make_entry(hass, email="two@example.com", tank_id="222222")
-
     one = BoilerJuiceDataUpdateCoordinator(hass, first)
     two = BoilerJuiceDataUpdateCoordinator(hass, second)
 
@@ -77,55 +147,185 @@ async def test_two_accounts_do_not_overwrite_each_others_totals(
         await two.async_refresh()
         await hass.async_block_till_done()
 
-        assert stored(hass_storage, first.entry_id)["reference_volume"] == 2000
-        assert stored(hass_storage, second.entry_id)["reference_volume"] == 1250
+        assert stored(hass_storage, entry_key(first))["reference_volume"] == 2000
+        assert stored(hass_storage, entry_key(second))["reference_volume"] == 1250
     finally:
         await one.async_close()
         await two.async_close()
 
 
-async def test_a_legacy_tank_keyed_document_is_adopted(
+async def test_concurrent_polls_do_not_lose_each_others_writes(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, hass_storage
 ) -> None:
-    """Users upgrading from a tank-keyed store must keep their history."""
+    import asyncio
+
+    first = make_entry(hass, email="one@example.com", tank_id="111111")
+    second = make_entry(hass, email="two@example.com", tank_id="222222")
+    one = BoilerJuiceDataUpdateCoordinator(hass, first)
+    two = BoilerJuiceDataUpdateCoordinator(hass, second)
+
+    try:
+        mock_site(
+            aioclient_mock,
+            tank_html=tank_page(percentage=80, litres=2000),
+            tank_id="111111",
+        )
+        mock_site(
+            aioclient_mock,
+            tank_html=tank_page(percentage=50, litres=1250),
+            tank_id="222222",
+            clear=False,
+        )
+        await asyncio.gather(one.async_refresh(), two.async_refresh())
+        await hass.async_block_till_done()
+
+        assert stored(hass_storage, entry_key(first))["reference_volume"] == 2000
+        assert stored(hass_storage, entry_key(second))["reference_volume"] == 1250
+    finally:
+        await one.async_close()
+        await two.async_close()
+
+
+async def test_a_restart_resumes_from_the_stored_totals(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, hass_storage
+) -> None:
     entry = make_entry(hass)
-    hass_storage[STORAGE_KEY] = {
+    hass_storage[entry_key(entry)] = {
         "version": STORAGE_VERSION,
-        "data": {
-            "123456": {
-                "total_consumption_liters": 120.0,
-                "total_consumption_kwh": 1242.0,
-                "daily_consumption_liters": 8.0,
-                "reference_volume": 2000.0,
-                "reference_level": 80.0,
-                "consumption_history": [8.0],
-                "consumption_history_with_dates": [],
-            }
-        },
+        "data": document_from_state(
+            ConsumptionState(
+                total_litres=340.0,
+                daily_litres=12.0,
+                reference_volume=2000,
+                reference_level=80.0,
+            )
+        ),
     }
     coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
 
     try:
-        mock_site(aioclient_mock, tank_html=tank_page(percentage=80, litres=2000))
+        mock_site(aioclient_mock, tank_html=tank_page(percentage=79, litres=1950))
         await coordinator.async_refresh()
         await hass.async_block_till_done()
 
-        assert coordinator.total_consumption_usable_liters == 120.0
-        # And it has been rehomed under the entry id.
-        assert entry.entry_id in hass_storage[STORAGE_KEY]["data"]
-        assert "123456" not in hass_storage[STORAGE_KEY]["data"]
+        # 340 carried over, plus the 50 L drop seen on this poll.
+        assert coordinator.total_consumption_usable_liters == 390.0
     finally:
         await coordinator.async_close()
 
 
-async def test_a_legacy_default_bucket_is_only_adopted_with_a_tank_id(
-    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, hass_storage
+# --- migration from the shared v1 document --------------------------------
+
+
+async def test_an_entry_keyed_v1_slot_is_migrated(
+    hass: HomeAssistant, hass_storage
 ) -> None:
-    """With no tank id the shared bucket is ambiguous, so it is left alone."""
+    entry = make_entry(hass)
+    hass_storage[LEGACY_STORAGE_KEY] = {
+        "version": LEGACY_STORAGE_VERSION,
+        "data": {entry.entry_id: legacy_document()},
+    }
+    store = ConsumptionStore(hass, entry.entry_id, "123456")
+
+    state, problem = await store.async_load()
+
+    assert problem is None
+    assert state.total_litres == 340.0
+    assert state.daily_litres == 12.0
+    assert len(state.history) == 2
+    assert LEGACY_STORAGE_KEY not in hass_storage
+    assert stored(hass_storage, entry_key(entry))["total_litres"] == 340.0
+
+
+async def test_a_tank_keyed_v1_slot_is_migrated(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    entry = make_entry(hass)
+    hass_storage[LEGACY_STORAGE_KEY] = {
+        "version": LEGACY_STORAGE_VERSION,
+        "data": {"123456": legacy_document()},
+    }
+    store = ConsumptionStore(hass, entry.entry_id, "123456")
+
+    state, _ = await store.async_load()
+
+    assert state.total_litres == 340.0
+
+
+async def test_the_v1_default_slot_is_only_claimed_with_a_tank_id(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    """With several untagged accounts the shared bucket is ambiguous."""
     entry = make_entry(hass, tank_id=None)
-    hass_storage[STORAGE_KEY] = {
+    hass_storage[LEGACY_STORAGE_KEY] = {
+        "version": LEGACY_STORAGE_VERSION,
+        "data": {"default": legacy_document()},
+    }
+    store = ConsumptionStore(hass, entry.entry_id, None)
+
+    state, _ = await store.async_load()
+
+    assert state.total_litres == 0.0
+    assert "default" in hass_storage[LEGACY_STORAGE_KEY]["data"]
+
+
+async def test_migrating_one_account_leaves_the_others_slots_alone(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    entry = make_entry(hass)
+    hass_storage[LEGACY_STORAGE_KEY] = {
+        "version": LEGACY_STORAGE_VERSION,
+        "data": {"123456": legacy_document(), "999999": legacy_document()},
+    }
+    store = ConsumptionStore(hass, entry.entry_id, "123456")
+
+    await store.async_load()
+
+    assert list(hass_storage[LEGACY_STORAGE_KEY]["data"]) == ["999999"]
+
+
+async def test_a_v1_zero_daily_rate_becomes_unknown_not_zero(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    """v1 wrote 0.0 for "not measured yet", which is not a real rate."""
+    entry = make_entry(hass)
+    hass_storage[LEGACY_STORAGE_KEY] = {
+        "version": LEGACY_STORAGE_VERSION,
+        "data": {"123456": legacy_document(daily_consumption_liters=0.0)},
+    }
+    store = ConsumptionStore(hass, entry.entry_id, "123456")
+
+    state, _ = await store.async_load()
+
+    assert state.daily_litres is None
+
+
+async def test_an_unusable_v1_slot_is_discarded_and_reported(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    entry = make_entry(hass)
+    hass_storage[LEGACY_STORAGE_KEY] = {
+        "version": LEGACY_STORAGE_VERSION,
+        "data": {"123456": legacy_document(total_consumption_liters="lots")},
+    }
+    store = ConsumptionStore(hass, entry.entry_id, "123456")
+
+    state, problem = await store.async_load()
+
+    assert state.total_litres == 0.0
+    assert problem is not None
+
+
+# --- recovery -------------------------------------------------------------
+
+
+async def test_a_corrupt_document_starts_fresh_and_raises_a_repair(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, hass_storage
+) -> None:
+    entry = make_entry(hass)
+    hass_storage[entry_key(entry)] = {
         "version": STORAGE_VERSION,
-        "data": {"default": {"total_consumption_liters": 500.0}},
+        "data": {"total_litres": "three hundred", "history": []},
     }
     coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
 
@@ -134,16 +334,20 @@ async def test_a_legacy_default_bucket_is_only_adopted_with_a_tank_id(
         await coordinator.async_refresh()
         await hass.async_block_till_done()
 
+        assert coordinator.last_update_success
         assert coordinator.total_consumption_usable_liters == 0.0
-        assert hass_storage[STORAGE_KEY]["data"]["default"] == {
-            "total_consumption_liters": 500.0
-        }
+
+        issue = ir.async_get(hass).async_get_issue(
+            DOMAIN, f"invalid_stored_data_{entry.entry_id}"
+        )
+        assert issue is not None
+        assert issue.translation_key == "invalid_stored_data"
     finally:
         await coordinator.async_close()
 
 
-async def test_reset_consumption_clears_the_stored_document(
-    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, hass_storage
+async def test_healthy_storage_raises_no_repair(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
     entry = make_entry(hass)
     coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
@@ -153,18 +357,107 @@ async def test_reset_consumption_clears_the_stored_document(
         await coordinator.async_refresh()
         await hass.async_block_till_done()
 
+        assert (
+            ir.async_get(hass).async_get_issue(
+                DOMAIN, f"invalid_stored_data_{entry.entry_id}"
+            )
+            is None
+        )
+    finally:
+        await coordinator.async_close()
+
+
+async def test_removing_an_entry_deletes_its_document(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, hass_storage
+) -> None:
+    entry = make_entry(hass)
+    coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
+
+    try:
+        mock_site(aioclient_mock, tank_html=tank_page(percentage=80, litres=2000))
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        assert entry_key(entry) in hass_storage
+
+        await coordinator.async_remove_storage()
+        await hass.async_block_till_done()
+
+        assert entry_key(entry) not in hass_storage
+    finally:
+        await coordinator.async_close()
+
+
+async def test_reset_clears_the_stored_document(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, hass_storage
+) -> None:
+    entry = make_entry(hass)
+    coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
+
+    try:
+        mock_site(aioclient_mock, tank_html=tank_page(percentage=80, litres=2000))
+        await coordinator.async_refresh()
         mock_site(aioclient_mock, tank_html=tank_page(percentage=70, litres=1750))
         await coordinator.async_refresh()
         await hass.async_block_till_done()
         assert coordinator.total_consumption_usable_liters == 250.0
 
-        coordinator.reset_consumption()
+        await coordinator.async_reset_consumption()
+
+        document = stored(hass_storage, entry_key(entry))
+        assert document["total_litres"] == 0.0
+        assert document["reference_volume"] is None
+        assert document["history"] == []
+    finally:
+        await coordinator.async_close()
+
+
+async def test_a_manual_daily_rate_survives_the_next_poll_and_a_restart(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, hass_storage
+) -> None:
+    """The override is documented as persistent, not silently recomputed."""
+    entry = make_entry(hass)
+    coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
+
+    try:
+        mock_site(aioclient_mock, tank_html=tank_page(percentage=80, litres=2000))
+        await coordinator.async_refresh()
+        await coordinator.async_set_consumption(100.0, 7.5)
         await hass.async_block_till_done()
 
-        assert coordinator.total_consumption_usable_liters == 0.0
-        document = stored(hass_storage, entry.entry_id)
-        assert document["total_consumption_liters"] == 0.0
-        assert document["reference_volume"] is None
-        assert document["consumption_history_with_dates"] == []
+        mock_site(aioclient_mock, tank_html=tank_page(percentage=70, litres=1750))
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+        assert coordinator.daily_consumption_usable_liters == 7.5
+        assert coordinator.daily_consumption_is_manual
+        assert stored(hass_storage, entry_key(entry))["daily_override"] == 7.5
+    finally:
+        await coordinator.async_close()
+
+    restarted = BoilerJuiceDataUpdateCoordinator(hass, entry)
+    try:
+        mock_site(aioclient_mock, tank_html=tank_page(percentage=70, litres=1750))
+        await restarted.async_refresh()
+        await hass.async_block_till_done()
+
+        assert restarted.daily_consumption_usable_liters == 7.5
+    finally:
+        await restarted.async_close()
+
+
+async def test_resetting_clears_a_manual_daily_rate(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    entry = make_entry(hass)
+    coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
+
+    try:
+        mock_site(aioclient_mock, tank_html=tank_page(percentage=80, litres=2000))
+        await coordinator.async_refresh()
+        await coordinator.async_set_consumption(100.0, 7.5)
+        await coordinator.async_reset_consumption()
+
+        assert coordinator.daily_consumption_usable_liters is None
+        assert not coordinator.daily_consumption_is_manual
     finally:
         await coordinator.async_close()

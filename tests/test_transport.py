@@ -15,15 +15,12 @@ from custom_components.boilerjuice.const import (
     PRICE_URL,
     TANKS_URL,
 )
-from custom_components.boilerjuice.coordinator import (
-    STORAGE_KEY,
-    STORAGE_VERSION,
-    BoilerJuiceDataUpdateCoordinator,
-)
+from custom_components.boilerjuice.coordinator import BoilerJuiceDataUpdateCoordinator
 from custom_components.boilerjuice.errors import (
     BoilerJuiceAuthError,
     BoilerJuiceConnectionError,
 )
+from custom_components.boilerjuice.storage import STORAGE_VERSION
 
 from .helpers import (
     PRICE_PAGE,
@@ -172,27 +169,22 @@ async def test_a_bad_energy_content_falls_back_to_the_default(
         await made.async_close()
 
 
-async def test_an_unreadable_stored_timestamp_is_ignored(
-    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, hass_storage
+async def test_an_unreadable_stored_timestamp_is_refused(
+    hass: HomeAssistant, hass_storage
 ) -> None:
+    """A timestamp we cannot parse means the whole document is suspect."""
     entry = make_entry(hass)
-    hass_storage[STORAGE_KEY] = {
+    hass_storage[f"boilerjuice.{entry.entry_id}"] = {
         "version": STORAGE_VERSION,
-        "data": {
-            entry.entry_id: {
-                "total_consumption_liters": 10.0,
-                "consumption_history_with_dates": [],
-                "last_update": "not-a-timestamp",
-            }
-        },
+        "data": {"total_litres": 10.0, "last_update": "not-a-timestamp"},
     }
     made = BoilerJuiceDataUpdateCoordinator(hass, entry)
 
     try:
-        await made._load_consumption_data()
+        await made._async_load()
 
-        assert made._last_update is None
-        assert made.total_consumption_usable_liters == 10.0
+        assert made.last_level_change is None
+        assert made.total_consumption_usable_liters == 0.0
     finally:
         await made.async_close()
 
@@ -264,10 +256,10 @@ async def test_a_refill_seen_only_in_the_percentage_is_not_consumption(
 
 
 async def test_a_reference_cannot_be_set_from_an_empty_reading(coordinator) -> None:
-    coordinator._previous_usable_volume = 2000.0
-    coordinator._previous_total_level = 80.0
+    coordinator._state.reference_volume = 2000
+    coordinator._state.reference_level = 80.0
 
-    coordinator.force_consumption_reference({})
+    await coordinator.async_force_consumption_reference({})
 
-    assert coordinator._previous_usable_volume == 2000.0
-    assert coordinator._previous_total_level == 80.0
+    assert coordinator._state.reference_volume == 2000
+    assert coordinator._state.reference_level == 80.0

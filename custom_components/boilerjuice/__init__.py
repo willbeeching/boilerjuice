@@ -202,7 +202,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
     async def async_handle_reset_consumption(call: ServiceCall) -> None:
         """Handle the service call to reset consumption."""
         for coordinator in _resolve_target_coordinators(hass, call):
-            coordinator.reset_consumption()
+            await coordinator.async_reset_consumption()
             await coordinator.async_request_refresh()
 
     hass.services.async_register(
@@ -214,9 +214,6 @@ def async_setup_services(hass: HomeAssistant) -> None:
 
     async def async_handle_set_consumption(call: ServiceCall) -> None:
         """Handle the service call to set consumption values."""
-        total_consumption = call.data["liters"]
-        daily_consumption = call.data.get("daily")
-
         for coordinator in _resolve_target_coordinators(hass, call):
             if not coordinator.data:
                 _LOGGER.warning(
@@ -224,32 +221,8 @@ def async_setup_services(hass: HomeAssistant) -> None:
                     "tank reading yet"
                 )
                 continue
-
-            # kWh is always derived from litres with this account's configured
-            # energy content, so the total never contradicts the cost sensors.
-            total_kwh = total_consumption * coordinator.kwh_per_litre
-
-            coordinator._total_consumption_usable_liters = total_consumption
-            coordinator._total_consumption_usable_kwh = total_kwh
-            if daily_consumption:
-                coordinator._daily_consumption_usable_liters = daily_consumption
-
-            # Force using current values as reference
-            coordinator.force_consumption_reference(coordinator.data)
-
-            coordinator.data["total_consumption_usable_liters"] = total_consumption
-            coordinator.data["total_consumption_usable_kwh"] = total_kwh
-            if daily_consumption:
-                coordinator.data["daily_consumption_usable_liters"] = daily_consumption
-
-            # Force a refresh to update the UI
-            coordinator.async_set_updated_data(coordinator.data)
-
-            _LOGGER.info(
-                "Manually set consumption values: total=%s L (%s kWh), daily=%s L/day",
-                total_consumption,
-                round(total_kwh, 1),
-                daily_consumption or "unchanged",
+            await coordinator.async_set_consumption(
+                call.data["liters"], call.data.get("daily")
             )
 
     hass.services.async_register(
@@ -332,3 +305,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             async_unload_services(hass)
             hass.data.pop(DOMAIN)
     return unload_ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete this account's stored consumption history when it is removed."""
+    coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
+    await coordinator.async_remove_storage()

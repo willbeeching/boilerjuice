@@ -25,7 +25,7 @@
   "services": {
     "reset_consumption": {
       "name": "Reset Consumption",
-      "description": "Reset the consumption counters to zero."
+      "description": "Reset the consumption counters, history and references to zero, and clear any manual daily consumption override."
     },
     "set_consumption": {
       "name": "Set Consumption",
@@ -37,9 +37,15 @@
         },
         "daily": {
           "name": "Daily Consumption",
-          "description": "The daily consumption in liters."
+          "description": "Optional daily consumption override in litres per day. It replaces the measured rate and persists across updates and restarts until you run \"Reset consumption\"."
         }
       }
+    }
+  },
+  "issues": {
+    "invalid_stored_data": {
+      "title": "BoilerJuice consumption history was reset",
+      "description": "The stored BoilerJuice consumption history could not be read and has been discarded, so consumption counting has restarted from zero ({reason}). Current tank readings are unaffected. If you know your previous total, you can restore it with the \"Set consumption\" action."
     }
   }
 }

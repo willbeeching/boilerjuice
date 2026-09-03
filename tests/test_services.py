@@ -37,9 +37,7 @@ async def two_accounts(
     )
 
     for entry, total in ((first, 40.0), (second, 90.0)):
-        coordinator = hass.data[DOMAIN][entry.entry_id]
-        coordinator._total_consumption_usable_liters = total
-        coordinator._total_consumption_usable_kwh = total * coordinator.kwh_per_litre
+        hass.data[DOMAIN][entry.entry_id]._state.total_litres = total
 
     return first, second
 
@@ -256,7 +254,7 @@ async def test_a_single_account_needs_no_target(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
     entry = await setup_account(hass, aioclient_mock)
-    hass.data[DOMAIN][entry.entry_id]._total_consumption_usable_liters = 40.0
+    hass.data[DOMAIN][entry.entry_id]._state.total_litres = 40.0
 
     await hass.services.async_call(DOMAIN, SERVICE_RESET_CONSUMPTION, {}, blocking=True)
     await hass.async_block_till_done()

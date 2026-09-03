@@ -112,3 +112,16 @@ async def test_yaml_configuration_starts_an_import_flow(
     await hass.async_block_till_done()
 
     assert len(hass.config_entries.async_entries(DOMAIN)) == 1
+
+
+async def test_removing_an_entry_deletes_its_stored_history(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, hass_storage
+) -> None:
+    entry = await setup_account(hass, aioclient_mock)
+    key = f"{DOMAIN}.{entry.entry_id}"
+    assert key in hass_storage
+
+    assert await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert key not in hass_storage

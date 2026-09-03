@@ -2,11 +2,13 @@
 
 Orchestration only: fetch through the client, decide what the reading means
 with the consumption engine, publish, persist. Parsing lives in parser.py,
-HTTP in client.py, and the maths in consumption.py.
+HTTP in client.py, the maths in consumption.py and the durable state in
+storage.py.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Union
@@ -14,8 +16,8 @@ from typing import Any, Union
 import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
-from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -31,14 +33,12 @@ from .const import (
 )
 from .models import TankReading
 from .parser import finite, percentage, validate_tank_id, volume_litres
+from .storage import ConsumptionState, ConsumptionStore
 
 _LOGGER = logging.getLogger(__name__)
 
 # Update every hour to allow smooth accumulation of energy consumption.
 SCAN_INTERVAL = timedelta(hours=1)
-
-STORAGE_VERSION = 1
-STORAGE_KEY = f"{DOMAIN}_consumption_data"
 
 # Re-exported so the rest of the integration has one import site for these.
 CONSUMPTION_ROLLING_DAYS = consumption.CONSUMPTION_ROLLING_DAYS
@@ -55,15 +55,9 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=SCAN_INTERVAL)
         self._config = config
 
-        self._previous_usable_volume: float | None = None
-        self._previous_total_level: float | None = None
-        self._total_consumption_usable_liters = 0.0
-        self._total_consumption_usable_kwh = 0.0
-        self._daily_consumption_usable_liters = 0.0
-        self._last_update: datetime | None = None
+        self._state = ConsumptionState()
+        self._sample_days = 0
         self._kwh_per_litre = self._validated_kwh_per_litre()
-        self._daily_consumption_history: list[float] = []
-        self._consumption_history_with_dates: consumption.DatedHistory = []
 
         # The oil price comes from a separate, optional request. Keep the last
         # good value so one failed fetch does not blank the price sensors.
@@ -73,7 +67,6 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         self._entry_id: str | None = (
             config.entry_id if isinstance(config, ConfigEntry) else None
         )
-        self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._tank_id = validate_tank_id(self._config_value(CONF_TANK_ID))
         if self._tank_id is None and self._config_value(CONF_TANK_ID):
             _LOGGER.warning(
@@ -81,12 +74,30 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                 "numeric; the first tank on the account will be used instead"
             )
 
+        # Coordinators built outside a config entry (the config flow's
+        # validation path) never persist anything.
+        self._store = (
+            ConsumptionStore(hass, self._entry_id, self._tank_id)
+            if self._entry_id
+            else None
+        )
+
+        # Every mutation of the running totals - a poll, a reset, a manual
+        # set - happens under this, and the write happens before the lock is
+        # released. Without it a service call landing mid-poll could be
+        # overwritten by the poll's own save.
+        self._lock = asyncio.Lock()
+        self._loaded = False
+
         self._client = BoilerJuiceClient(
             self._create_session,
             self._config_value(CONF_EMAIL, required=True),
             self._config_value(CONF_PASSWORD, required=True),
         )
-        self._consumption_data_loaded = False
+
+    # ------------------------------------------------------------------
+    # Configuration
+    # ------------------------------------------------------------------
 
     def _create_session(self, timeout: aiohttp.ClientTimeout) -> aiohttp.ClientSession:
         """Create a session owned by Home Assistant, with a private cookie jar.
@@ -118,6 +129,10 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             return DEFAULT_KWH_PER_LITRE
         return configured
 
+    # ------------------------------------------------------------------
+    # Published state
+    # ------------------------------------------------------------------
+
     @property
     def kwh_per_litre(self) -> float:
         """Return the configured energy content of a litre of oil."""
@@ -126,30 +141,45 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
     @property
     def total_consumption_usable_liters(self) -> float:
         """Return the total oil consumption in liters."""
-        return self._total_consumption_usable_liters
+        return self._state.total_litres
 
     @property
     def total_consumption_usable_kwh(self) -> float:
-        """Return the total oil consumption in kWh."""
-        return self._total_consumption_usable_kwh
+        """Return the total oil consumption in kWh.
+
+        Always derived from litres, never stored independently, so it cannot
+        drift from the litre total or from the configured energy content.
+        """
+        return self._state.total_litres * self._kwh_per_litre
 
     @property
-    def daily_consumption_usable_liters(self) -> float:
-        """Return the average daily oil consumption in liters."""
-        return self._daily_consumption_usable_liters
+    def daily_consumption_usable_liters(self) -> float | None:
+        """Return the daily rate, or None when nothing has been measured.
 
-    @staticmethod
-    def _as_local(value: datetime) -> datetime:
-        """Return `value` as a timezone-aware local datetime.
-
-        Timestamps written before this integration became timezone-aware were
-        naive local wall-clock (plain `datetime.now()`), so they are localized
-        rather than reinterpreted as UTC. Without this, stored history would
-        mix naive and aware values and every comparison would raise TypeError.
+        None rather than 0.0: "we have not seen a full day yet" and "this
+        tank burns no oil" are different answers, and only one of them should
+        drive a days-until-empty estimate.
         """
-        if value.tzinfo is None:
-            return value.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
-        return dt_util.as_local(value)
+        return self._state.effective_daily_litres
+
+    @property
+    def consumption_sample_days(self) -> int:
+        """Return how many complete days the daily rate averages."""
+        return 0 if self._state.daily_override is not None else self._sample_days
+
+    @property
+    def daily_consumption_is_manual(self) -> bool:
+        """Whether the published daily rate is a manual override."""
+        return self._state.daily_override is not None
+
+    @property
+    def last_level_change(self) -> datetime | None:
+        """Return when the tank level was last seen to change."""
+        return self._state.last_update
+
+    # ------------------------------------------------------------------
+    # Loading
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _local_midnight(date_str: str) -> datetime:
@@ -158,111 +188,48 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             tzinfo=dt_util.DEFAULT_TIME_ZONE
         )
 
-    # ------------------------------------------------------------------
-    # Storage
-    # ------------------------------------------------------------------
+    async def _async_load(self) -> None:
+        """Load the stored state once, reporting anything unusable."""
+        if self._loaded:
+            return
+        self._loaded = True
 
-    def _apply_stored_data(self, source: str, data: dict) -> None:
-        """Hydrate coordinator state from a stored-data blob."""
-        self._total_consumption_usable_liters = data.get(
-            "total_consumption_liters", 0.0
-        )
-        self._total_consumption_usable_kwh = data.get("total_consumption_kwh", 0.0)
-        self._daily_consumption_usable_liters = data.get(
-            "daily_consumption_liters", 0.0
-        )
-        self._daily_consumption_history = data.get("consumption_history", [])
-
-        self._consumption_history_with_dates = [
-            (self._as_local(datetime.fromisoformat(moment)), litres)
-            for moment, litres in data.get("consumption_history_with_dates", [])
-        ]
-
-        last_update = data.get("last_update")
-        if last_update:
-            try:
-                self._last_update = self._as_local(datetime.fromisoformat(last_update))
-            except (ValueError, TypeError):
-                self._last_update = None
-
-        self._previous_usable_volume = data.get("reference_volume")
-        self._previous_total_level = data.get("reference_level")
-
-        _LOGGER.info(
-            "Loaded stored consumption data from %s: total=%s L, daily=%s L/day",
-            source,
-            self._total_consumption_usable_liters,
-            self._daily_consumption_usable_liters,
-        )
-
-    async def _load_consumption_data(self) -> None:
-        """Load consumption data from storage.
-
-        Data is keyed by config entry id so that multiple BoilerJuice accounts
-        never share state. For backwards compatibility we fall back to the
-        legacy tank-id key (and, only when a tank id is configured, the
-        "default" key) so existing users don't lose consumption history on
-        upgrade.
-        """
-        if self._consumption_data_loaded:
+        if self._store is None:
             return
 
-        stored = await self._store.async_load() or {}
-
-        if self._entry_id and self._entry_id in stored:
-            self._apply_stored_data(f"entry {self._entry_id}", stored[self._entry_id])
-        elif self._tank_id and self._tank_id in stored:
-            # Legacy per-tank key - migrated into the entry-keyed slot on save.
-            self._apply_stored_data(
-                "a legacy tank-keyed document", stored[self._tank_id]
+        state, problem = await self._store.async_load()
+        self._state = state
+        self._sample_days = len(
+            consumption.rolling_window(
+                consumption.daily_totals(state.history), dt_util.now()
             )
-        elif self._tank_id and stored.get("default"):
-            # Only migrate the legacy "default" bucket when we can be sure it
-            # belongs to this entry (i.e. a tank id is explicitly configured).
-            # With multiple untagged accounts the default bucket is ambiguous,
-            # so we leave it untouched rather than risk cross-contamination.
-            self._apply_stored_data("the legacy default document", stored["default"])
+        )
 
-        self._consumption_data_loaded = True
+        if problem is None:
+            ir.async_delete_issue(self.hass, DOMAIN, self._storage_issue_id)
+            return
 
-    async def _save_consumption_data(self) -> None:
-        """Save consumption data to storage under this entry's key."""
-        storage_key = self._entry_id
-        if not storage_key:
-            # Coordinators created outside a config entry (the config flow's
-            # validation path) do not persist anything meaningful.
-            storage_key = (self.data or {}).get("id") or self._tank_id or "default"
+        # The history is gone and consumption restarts from zero, so tell the
+        # user rather than letting their statistics quietly reset.
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            self._storage_issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="invalid_stored_data",
+            translation_placeholders={"reason": problem},
+        )
 
-        stored = await self._store.async_load() or {}
+    @property
+    def _storage_issue_id(self) -> str:
+        """Return the repair issue id for this entry's storage."""
+        return f"invalid_stored_data_{self._entry_id}"
 
-        document = {
-            "total_consumption_liters": self._total_consumption_usable_liters,
-            "total_consumption_kwh": self._total_consumption_usable_kwh,
-            "daily_consumption_liters": self._daily_consumption_usable_liters,
-            "reference_volume": self._previous_usable_volume,
-            "reference_level": self._previous_total_level,
-            "consumption_history": self._daily_consumption_history,
-            "consumption_history_with_dates": [
-                [moment.isoformat(), litres]
-                for moment, litres in self._consumption_history_with_dates
-            ],
-        }
-        if self._last_update:
-            document["last_update"] = self._last_update.isoformat()
-
-        stored[storage_key] = document
-
-        # Clean up legacy tank-id keyed entries now owned by this config
-        # entry. The shared "default" bucket is left alone because we can't
-        # safely tell whether it still belongs to an entry that hasn't
-        # migrated yet.
-        if self._entry_id:
-            scraped_tank_id = (self.data or {}).get("id")
-            for legacy_key in {self._tank_id, scraped_tank_id}:
-                if legacy_key and legacy_key != self._entry_id:
-                    stored.pop(legacy_key, None)
-
-        await self._store.async_save(stored)
+    async def _async_persist(self) -> None:
+        """Write the current state. Callers hold the lock."""
+        if self._store is not None:
+            await self._store.async_save(self._state)
 
     # ------------------------------------------------------------------
     # Public operations
@@ -272,28 +239,60 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         """Close the client's session (call on unload)."""
         await self._client.async_close()
 
-    def reset_consumption(self) -> None:
-        """Reset the consumption counters and references."""
-        self._total_consumption_usable_liters = 0.0
-        self._total_consumption_usable_kwh = 0.0
-        self._daily_consumption_usable_liters = 0.0
-        self._daily_consumption_history = []
-        self._previous_usable_volume = None
-        self._previous_total_level = None
-        self._last_update = None
-        self._consumption_history_with_dates = []
+    async def async_remove_storage(self) -> None:
+        """Delete this entry's stored history (call when the entry is removed)."""
+        if self._store is not None:
+            await self._store.async_remove()
+        ir.async_delete_issue(self.hass, DOMAIN, self._storage_issue_id)
 
-        self.hass.async_create_task(self._save_consumption_data())
+    async def async_reset_consumption(self) -> None:
+        """Reset the counters, references and history, and persist that."""
+        async with self._lock:
+            self._state = self._state.cleared()
+            self._sample_days = 0
+            await self._async_persist()
 
-    def force_consumption_reference(self, data: dict) -> None:
-        """Set the current levels as references without resetting the stats.
+    async def async_set_consumption(
+        self, total_litres: float, daily_litres: float | None = None
+    ) -> None:
+        """Set the totals by hand and rebase the references on the last reading.
+
+        `daily_litres` is a persistent override: it survives polls and
+        restarts until `reset_consumption` clears it, rather than being
+        recomputed away by the next update.
+        """
+        async with self._lock:
+            self._state.total_litres = total_litres
+            if daily_litres is not None:
+                self._state.daily_override = daily_litres
+            self._rebase_references(self.data or {})
+            await self._async_persist()
+
+            if self.data:
+                self.async_set_updated_data(self._decorate(dict(self.data)))
+
+        _LOGGER.info(
+            "Manually set consumption: total=%s L (%s kWh), daily=%s",
+            total_litres,
+            round(total_litres * self._kwh_per_litre, 1),
+            "unchanged" if daily_litres is None else f"{daily_litres} L/day",
+        )
+
+    async def async_force_consumption_reference(self, state: dict) -> None:
+        """Rebase the references on `state` without resetting the totals."""
+        async with self._lock:
+            self._rebase_references(state)
+            await self._async_persist()
+
+    def _rebase_references(self, state: dict) -> None:
+        """Point the references at a reading. Callers hold the lock.
 
         Only validated readings become references. A missing level used to be
         coerced to 0, which made the very next poll look like the tank had
         been filled from empty.
         """
-        volume = volume_litres(data.get("usable_volume_litres"))
-        level = percentage(data.get("total_level_percentage"))
+        volume = volume_litres(state.get("usable_volume_litres"))
+        level = percentage(state.get("total_level_percentage"))
 
         if volume is None and level is None:
             _LOGGER.warning(
@@ -302,50 +301,45 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             )
             return
 
-        self._previous_usable_volume = volume
-        self._previous_total_level = level
-        self._last_update = dt_util.now()
-
-        self.hass.async_create_task(self._save_consumption_data())
+        self._state.reference_volume = volume
+        self._state.reference_level = level
+        self._state.last_update = dt_util.now()
 
     # ------------------------------------------------------------------
     # Update cycle
     # ------------------------------------------------------------------
 
     def _record_consumption(self, litres: float, now: datetime) -> None:
-        """Record observed consumption and refresh the derived averages."""
-        self._total_consumption_usable_liters += litres
-        self._total_consumption_usable_kwh += litres * self._kwh_per_litre
-
-        self._consumption_history_with_dates.extend(
-            consumption.allocate_over_days(litres, self._last_update, now)
+        """Record observed consumption. Callers hold the lock."""
+        self._state.total_litres += litres
+        self._state.history.extend(
+            consumption.allocate_over_days(litres, self._state.last_update, now)
         )
         self._refresh_rolling_average(now)
 
         # Consumption was detected, so the next interval starts from here.
-        self._last_update = now
+        self._state.last_update = now
 
     def _refresh_rolling_average(self, now: datetime) -> dict[str, float]:
         """Recompute the rolling daily rate. Returns the regrouped totals."""
-        totals = consumption.daily_totals(self._consumption_history_with_dates)
-        self._daily_consumption_history = consumption.rolling_window(totals, now)
-        self._daily_consumption_usable_liters = consumption.average(
-            self._daily_consumption_history
-        )
+        totals = consumption.daily_totals(self._state.history)
+        window = consumption.rolling_window(totals, now)
+        self._sample_days = len(window)
+        self._state.daily_litres = consumption.average(window) if window else None
         return totals
 
     def _apply_reading(self, reading: TankReading, now: datetime) -> None:
         """Move the running totals on from a validated reading."""
-        if self._previous_usable_volume is None and self._previous_total_level is None:
+        if self._state.reference_volume is None and self._state.reference_level is None:
             _LOGGER.info(
                 "First update or reference values missing - setting initial "
                 "values without calculating consumption"
             )
-            self.force_consumption_reference(reading.as_state())
+            self._rebase_references(reading.as_state())
             return
 
         transition = consumption.classify(
-            self._previous_usable_volume, self._previous_total_level, reading
+            self._state.reference_volume, self._state.reference_level, reading
         )
 
         if transition.is_refill:
@@ -355,7 +349,7 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                 transition.source,
             )
             # The next consumption interval starts from now.
-            self._last_update = now
+            self._state.last_update = now
         elif transition.is_consumption:
             _LOGGER.info(
                 "Detected consumption of %s L from the %s",
@@ -368,42 +362,25 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
         # reading that carries a level but no volume must not blank the volume
         # reference, or the next poll would book the whole tank as consumed.
         if reading.volume_litres is not None:
-            self._previous_usable_volume = reading.volume_litres
+            self._state.reference_volume = reading.volume_litres
         if reading.level_percentage is not None:
-            self._previous_total_level = reading.level_percentage
+            self._state.reference_level = reading.level_percentage
 
-    def _publish(self, reading: TankReading, now: datetime) -> dict[str, Any]:
-        """Return the state dict for `reading`, with the derived figures."""
-        state = reading.as_state()
+    def _decorate(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Attach the derived consumption figures to a published state."""
+        daily = self.daily_consumption_usable_liters
 
-        # Recalculate on every run, not just when consumption was detected,
-        # so old incorrect data ages out after the rolling window.
-        if self._consumption_history_with_dates:
-            totals = self._refresh_rolling_average(now)
-            self._consumption_history_with_dates = consumption.trim_history(
-                totals, now, self._local_midnight
-            )
-            seasonal = consumption.seasonal_stats(totals, now, self._local_midnight)
-        else:
-            seasonal = {}
-
-        # kWh is derived from litres with the configured energy content, so a
-        # changed "kWh per litre" is reflected everywhere on the next poll
-        # instead of leaving the total contradicting the cost sensors.
-        self._total_consumption_usable_kwh = (
-            self._total_consumption_usable_liters * self._kwh_per_litre
-        )
-
-        state["total_consumption_usable_liters"] = self._total_consumption_usable_liters
-        state["total_consumption_usable_kwh"] = self._total_consumption_usable_kwh
-        state["daily_consumption_usable_liters"] = self._daily_consumption_usable_liters
+        state["total_consumption_usable_liters"] = self._state.total_litres
+        state["total_consumption_usable_kwh"] = self.total_consumption_usable_kwh
+        state["daily_consumption_usable_liters"] = daily
+        state["consumption_sample_days"] = self.consumption_sample_days
+        state["daily_consumption_is_manual"] = self.daily_consumption_is_manual
         state["days_until_empty"] = consumption.days_until_empty(
-            reading.volume_litres,
-            reading.capacity_litres,
-            reading.level_percentage,
-            self._daily_consumption_usable_liters,
+            state.get("current_volume_litres"),
+            state.get("capacity_litres"),
+            state.get("total_level_percentage"),
+            daily or 0.0,
         )
-        state["seasonal_stats"] = seasonal
         state["kwh_per_litre"] = self._kwh_per_litre
 
         if self._last_price_pence is not None:
@@ -412,6 +389,24 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                 state["price_last_updated"] = self._last_price_updated.isoformat()
 
         return state
+
+    def _publish(self, reading: TankReading, now: datetime) -> dict[str, Any]:
+        """Return the state dict for `reading`, with the derived figures."""
+        state = reading.as_state()
+
+        # Recalculate on every run, not just when consumption was detected,
+        # so old incorrect data ages out after the rolling window.
+        if self._state.history:
+            totals = self._refresh_rolling_average(now)
+            self._state.history = consumption.trim_history(
+                totals, now, self._local_midnight
+            )
+            seasonal = consumption.seasonal_stats(totals, now, self._local_midnight)
+        else:
+            seasonal = {}
+
+        state["seasonal_stats"] = seasonal
+        return self._decorate(state)
 
     async def _async_refresh_price(self) -> None:
         """Refresh the oil price, keeping the last good value on failure."""
@@ -422,8 +417,7 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from BoilerJuice."""
-        if not self._consumption_data_loaded:
-            await self._load_consumption_data()
+        await self._async_load()
 
         try:
             reading = await self._client.async_fetch_tank(self._tank_id)
@@ -436,17 +430,18 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.exception("Unexpected error updating BoilerJuice data")
             raise UpdateFailed(f"Unexpected error updating tank data: {err}") from err
 
-        now = dt_util.now()
-        self._apply_reading(reading, now)
         await self._async_refresh_price()
-        state = self._publish(reading, now)
+
+        async with self._lock:
+            now = dt_util.now()
+            self._apply_reading(reading, now)
+            state = self._publish(reading, now)
+            await self._async_persist()
 
         _LOGGER.debug(
-            "Consumption data: total=%s L, daily=%s L/day, total_kwh=%s",
-            round(self._total_consumption_usable_liters, 1),
-            round(self._daily_consumption_usable_liters, 1),
-            round(self._total_consumption_usable_kwh, 1),
+            "Consumption: total=%s L, daily=%s, sample days=%s",
+            round(self._state.total_litres, 1),
+            self._state.effective_daily_litres,
+            self._sample_days,
         )
-
-        self.hass.async_create_task(self._save_consumption_data())
         return state

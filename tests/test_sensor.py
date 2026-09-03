@@ -21,7 +21,7 @@ async def test_the_full_set_of_sensors_is_created(
         for state in hass.states.async_all("sensor")
         if state.entity_id.startswith("sensor.")
     ]
-    assert len(states) == 14
+    assert len(states) == 13
 
 
 async def test_sensor_values_come_from_the_parsed_page(
@@ -121,7 +121,7 @@ async def test_the_last_update_sensor_reports_when_the_level_last_moved(
         if state.entity_id.endswith("_last_updated")
     )
     assert last_update.state != "unknown"
-    assert coordinator._last_update is not None
+    assert coordinator.last_level_change is not None
 
 
 async def test_every_sensor_reports_unknown_when_there_is_no_reading(
@@ -140,10 +140,10 @@ async def test_every_sensor_reports_unknown_when_there_is_no_reading(
         and issubclass(cls, sensor_module.BoilerJuiceSensor)
         and cls is not sensor_module.BoilerJuiceSensor
     ]
-    assert len(entities) == 14
+    assert len(entities) == 13
 
     coordinator.data = None
-    coordinator._last_update = None
+    coordinator._state.last_update = None
 
     for entity in entities:
         entity.hass = hass

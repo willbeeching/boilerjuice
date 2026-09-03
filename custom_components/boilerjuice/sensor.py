@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import datetime as dt
 import logging
 from datetime import datetime
 from typing import Any, Dict
-from zoneinfo import ZoneInfo
 
+from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -15,31 +14,43 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfVolume
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceEntryType
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.restore_state import RestoreEntity
-from homeassistant.helpers.typing import StateType
 
 from .const import (
-    ATTR_OIL_TYPE,
-    ATTR_TANK_ID,
-    ATTR_TANK_MODEL,
-    ATTR_TANK_NAME,
-    ATTR_TANK_SHAPE,
     DEFAULT_KWH_PER_LITRE,
     DOMAIN,
     SENSOR_CAPACITY,
     SENSOR_HEIGHT,
     SENSOR_VOLUME,
-    UNIT_CM,
-    UNIT_LITRES,
-    UNIT_PERCENTAGE,
 )
 from .coordinator import BoilerJuiceDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+
+# The incremental "Oil Consumption (kWh)" sensor accumulated state as a side
+# effect of being read, which made its value depend on how often something
+# looked at it. Its cumulative sibling is the correct Energy dashboard
+# source, so the incremental one is gone and its registry entry goes with it
+# rather than lingering as a permanently unavailable entity.
+RETIRED_UNIQUE_ID_SUFFIXES = ("_BoilerJuiceIncrementalConsumptionKwhSensor",)
+
+
+@callback
+def _async_remove_retired_entities(
+    hass: HomeAssistant, coordinator: BoilerJuiceDataUpdateCoordinator
+) -> None:
+    """Drop registry entries for sensors this version no longer creates."""
+    registry = er.async_get(hass)
+    for suffix in RETIRED_UNIQUE_ID_SUFFIXES:
+        unique_id = f"{coordinator.data['id']}{suffix}"
+        entity_id = registry.async_get_entity_id(SENSOR_DOMAIN, DOMAIN, unique_id)
+        if entity_id is not None:
+            _LOGGER.info("Removing the retired %s entity", entity_id)
+            registry.async_remove(entity_id)
 
 
 async def async_setup_entry(
@@ -49,6 +60,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up BoilerJuice sensors from a config entry."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
+    _async_remove_retired_entities(hass, coordinator)
 
     async_add_entities(
         [
@@ -59,7 +71,6 @@ async def async_setup_entry(
             BoilerJuiceDailyConsumptionSensor(coordinator, entry.entry_id),
             BoilerJuiceTotalConsumptionSensor(coordinator, entry.entry_id),
             BoilerJuiceTotalConsumptionKwhSensor(coordinator, entry.entry_id),
-            BoilerJuiceIncrementalConsumptionKwhSensor(coordinator, entry.entry_id),
             BoilerJuiceTankHeightSensor(coordinator, entry.entry_id),
             BoilerJuiceDaysUntilEmptySensor(coordinator, entry.entry_id),
             BoilerJuiceKwhPerLitreSensor(coordinator, entry.entry_id),
@@ -165,11 +176,27 @@ class BoilerJuiceDailyConsumptionSensor(BoilerJuiceSensor):
 
     @property
     def native_value(self) -> float | None:
-        """Return the state of the sensor."""
+        """Return the measured daily rate, or None if none was measured.
+
+        Unknown rather than 0.0: "no complete day has been seen yet" and
+        "this tank burns no oil" are different answers.
+        """
         if not self._coordinator.data:
             return None
         value = self._coordinator.data.get("daily_consumption_usable_liters")
         return round(value, 1) if value is not None else None
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Say how much evidence is behind the rate."""
+        if not self._coordinator.data:
+            return {}
+        return {
+            "sample_days": self._coordinator.data.get("consumption_sample_days", 0),
+            "manually_set": self._coordinator.data.get(
+                "daily_consumption_is_manual", False
+            ),
+        }
 
 
 class BoilerJuiceTotalConsumptionSensor(BoilerJuiceSensor):
@@ -204,112 +231,6 @@ class BoilerJuiceTotalConsumptionKwhSensor(BoilerJuiceSensor):
             return None
         value = self._coordinator.data.get("total_consumption_usable_kwh")
         return round(value, 1) if value is not None else None
-
-
-class BoilerJuiceIncrementalConsumptionKwhSensor(BoilerJuiceSensor, RestoreEntity):
-    """Representation of a BoilerJuice incremental consumption in kWh sensor."""
-
-    _attr_name = "Oil Consumption (kWh)"
-    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
-    _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
-
-    def __init__(
-        self,
-        coordinator: BoilerJuiceDataUpdateCoordinator,
-        entry_id: str,
-    ) -> None:
-        """Initialize the sensor."""
-        super().__init__(coordinator, entry_id)
-        self._last_consumption = 0.0
-        self._last_check_time = None
-        self._daily_consumption = 0.0
-        self._last_reset = None
-        self._restored = False
-
-    async def async_added_to_hass(self) -> None:
-        """When entity is added to hass, restore state if available."""
-        await super().async_added_to_hass()
-
-        if not self._restored:
-            last_state = await self.async_get_last_state()
-            if last_state is not None and last_state.state not in (
-                "unknown",
-                "unavailable",
-            ):
-                try:
-                    self._daily_consumption = float(last_state.state)
-
-                    # Restore additional attributes if available
-                    if last_state.attributes:
-                        if "last_reset" in last_state.attributes:
-                            self._last_reset = datetime.fromisoformat(
-                                last_state.attributes["last_reset"]
-                            )
-                        if "last_check_time" in last_state.attributes:
-                            self._last_check_time = datetime.fromisoformat(
-                                last_state.attributes["last_check_time"]
-                            )
-
-                    _LOGGER.info(
-                        "Restored Oil Consumption (kWh) sensor state: %s kWh, last_reset: %s",
-                        self._daily_consumption,
-                        self._last_reset,
-                    )
-                except (ValueError, TypeError) as err:
-                    _LOGGER.warning(
-                        "Could not restore Oil Consumption (kWh) sensor state: %s", err
-                    )
-
-            self._restored = True
-
-    @property
-    def native_value(self) -> float | None:
-        """Return the incremental energy consumption in kWh."""
-        if not self._coordinator.data:
-            return None
-
-        now = datetime.now(ZoneInfo(self.hass.config.time_zone))
-
-        # Reset at midnight
-        if self._last_reset is None or now.date() != self._last_reset.date():
-            self._daily_consumption = 0.0
-            self._last_reset = now
-            self._last_check_time = now
-            return self._daily_consumption
-
-        # Get the daily consumption in liters
-        daily_consumption_liters = self._coordinator.data.get(
-            "daily_consumption_usable_liters"
-        )
-        if daily_consumption_liters is None:
-            return self._daily_consumption
-
-        if self._last_check_time:
-            # Calculate consumption since last check based on time
-            time_diff = (now - self._last_check_time).total_seconds() / (
-                24 * 3600
-            )  # Fraction of day
-            kwh_per_litre = self._coordinator.data.get(
-                "kwh_per_litre", DEFAULT_KWH_PER_LITRE
-            )
-            incremental_consumption = (
-                daily_consumption_liters * kwh_per_litre
-            ) * time_diff
-            self._daily_consumption += incremental_consumption
-
-        self._last_check_time = now
-        return round(self._daily_consumption, 1)
-
-    @property
-    def extra_state_attributes(self) -> Dict[str, Any]:
-        """Return the state attributes for restoration."""
-        attrs = {}
-        if self._last_reset:
-            attrs["last_reset"] = self._last_reset.isoformat()
-        if self._last_check_time:
-            attrs["last_check_time"] = self._last_check_time.isoformat()
-        return attrs
 
 
 class BoilerJuiceDaysUntilEmptySensor(BoilerJuiceSensor):
@@ -381,7 +302,7 @@ class BoilerJuiceOilPriceSensor(BoilerJuiceSensor):
             return {}
         return {
             "price_pence_per_litre": self._coordinator.data.get("current_price_pence"),
-            "last_updated": self._coordinator.data.get("last_updated"),
+            "last_updated": self._coordinator.data.get("price_last_updated"),
         }
 
 
@@ -433,16 +354,8 @@ class BoilerJuiceLastUpdateSensor(BoilerJuiceSensor):
 
     @property
     def native_value(self) -> datetime | None:
-        """Return the last update timestamp."""
-        if not self._coordinator._last_update:
-            return None
-
-        # Make sure timestamp has timezone info
-        last_update = self._coordinator._last_update
-        if last_update.tzinfo is None:
-            # Use the Home Assistant timezone
-            return last_update.replace(tzinfo=ZoneInfo(self.hass.config.time_zone))
-        return last_update
+        """Return when the tank level was last seen to change."""
+        return self._coordinator.last_level_change
 
 
 class BoilerJuiceSeasonalConsumptionSensor(BoilerJuiceSensor):
@@ -471,20 +384,17 @@ class BoilerJuiceSeasonalConsumptionSensor(BoilerJuiceSensor):
         if not seasonal_stats:
             return {}
 
+        current = seasonal_stats.get("current_season", {})
+        # A season we have no data for is unknown, not a tank that burnt
+        # nothing all winter.
         attributes = {
-            "current_season": seasonal_stats.get("current_season", {}).get(
-                "name", "unknown"
-            ),
-            "current_season_min": seasonal_stats.get("current_season", {}).get(
-                "min", 0
-            ),
-            "current_season_max": seasonal_stats.get("current_season", {}).get(
-                "max", 0
-            ),
-            "winter_average": seasonal_stats.get("winter_avg", 0),
-            "spring_average": seasonal_stats.get("spring_avg", 0),
-            "summer_average": seasonal_stats.get("summer_avg", 0),
-            "autumn_average": seasonal_stats.get("autumn_avg", 0),
+            "current_season": current.get("name") or None,
+            "current_season_min": current.get("min"),
+            "current_season_max": current.get("max"),
+            "winter_average": seasonal_stats.get("winter_avg"),
+            "spring_average": seasonal_stats.get("spring_avg"),
+            "summer_average": seasonal_stats.get("summer_avg"),
+            "autumn_average": seasonal_stats.get("autumn_avg"),
         }
 
         # Add monthly averages if available
