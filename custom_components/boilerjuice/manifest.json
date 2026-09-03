@@ -1,7 +1,9 @@
 {
   "domain": "boilerjuice",
   "name": "BoilerJuice",
-  "codeowners": ["@willbeeching"],
+  "codeowners": [
+    "@willbeeching"
+  ],
   "config_flow": true,
   "dependencies": [],
   "documentation": "https://github.com/willbeeching/boilerjuice",
@@ -9,10 +11,15 @@
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/willbeeching/boilerjuice/issues",
-  "loggers": ["custom_components.boilerjuice"],
+  "loggers": [
+    "custom_components.boilerjuice"
+  ],
   "quality_scale": "silver",
-  "requirements": ["aiohttp>=3.8.0", "beautifulsoup4>=4.12.0"],
+  "requirements": [
+    "aiohttp>=3.8.0",
+    "beautifulsoup4>=4.12.0"
+  ],
   "ssdp": [],
-  "version": "1.3.1",
+  "version": "1.3.2",
   "zeroconf": []
 }

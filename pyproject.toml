@@ -28,3 +28,8 @@ ensure_newline_before_comments = true
 
 
 
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-p no:randomly"

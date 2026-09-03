@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
@@ -18,6 +17,7 @@ from .coordinator import (
     BoilerJuiceAuthError,
     BoilerJuiceConnectionError,
     BoilerJuiceDataUpdateCoordinator,
+    validate_tank_id,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -89,12 +89,23 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             try:
+                # A tank id is a numeric path segment. Anything else would
+                # build a URL that resolves to a page we cannot parse.
+                raw_tank_id = user_input.get(CONF_TANK_ID)
+                if raw_tank_id:
+                    tank_id = validate_tank_id(raw_tank_id)
+                    if tank_id is None:
+                        raise InvalidTankId
+                    user_input[CONF_TANK_ID] = tank_id
+
                 # Check if this email is already configured
                 await self.async_set_unique_id(user_input[CONF_EMAIL])
                 self._abort_if_unique_id_configured()
 
                 info = await validate_input(self.hass, user_input)
                 return self.async_create_entry(title=info["title"], data=user_input)
+            except InvalidTankId:
+                errors[CONF_TANK_ID] = "invalid_tank_id"
             except InvalidAuth:
                 errors["base"] = "invalid_auth"
             except CannotConnect:
@@ -116,3 +127,7 @@ class InvalidAuth(HomeAssistantError):
 
 class CannotConnect(HomeAssistantError):
     """Error to indicate we cannot connect to the service."""
+
+
+class InvalidTankId(HomeAssistantError):
+    """Error to indicate the configured tank id is not a BoilerJuice tank id."""

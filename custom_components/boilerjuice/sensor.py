@@ -290,7 +290,9 @@ class BoilerJuiceIncrementalConsumptionKwhSensor(BoilerJuiceSensor, RestoreEntit
             time_diff = (now - self._last_check_time).total_seconds() / (
                 24 * 3600
             )  # Fraction of day
-            kwh_per_litre = self._coordinator.data.get("kwh_per_litre", 10.35)
+            kwh_per_litre = self._coordinator.data.get(
+                "kwh_per_litre", DEFAULT_KWH_PER_LITRE
+            )
             incremental_consumption = (
                 daily_consumption_liters * kwh_per_litre
             ) * time_diff
