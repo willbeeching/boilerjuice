@@ -31,6 +31,17 @@ class BoilerJuiceServerError(BoilerJuiceConnectionError):
     """BoilerJuice returned a server error."""
 
 
+class RedactedTransportError(Exception):
+    """A transport failure with its details stripped out.
+
+    Stands in as the `__cause__` of a connection error. aiohttp puts the
+    request URL in its own exception text, and a tank page URL contains the
+    tank id, so chaining the original would put that id into any traceback -
+    including the one Home Assistant's own coordinator logs at debug level.
+    This keeps the shape of the failure without the identifier.
+    """
+
+
 class BoilerJuiceParseError(BoilerJuiceError):
     """A BoilerJuice page did not yield a usable tank reading.
 

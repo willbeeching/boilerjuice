@@ -30,7 +30,16 @@ with your email and password and reads the tank page.
 - Each configured account gets its own session and its own cookie jar. They
   are never shared with another account or with another integration.
 - Nothing in the integration logs a password, an email address, a tank ID, a
-  CSRF token, a cookie or page HTML, at any log level.
+  CSRF token, a cookie or page HTML, at any log level. That includes
+  tracebacks: aiohttp puts the request URL in its own exception text, and a
+  tank page URL contains the tank ID, so transport failures are re-raised
+  with a redacted cause rather than the original. A test drives a real
+  failure through the coordinator and checks every formatted log record.
+- Every request is followed by hand rather than by aiohttp's redirect
+  handling, and each hop must be HTTPS on boilerjuice.com, on the default
+  port, with no credentials in the URL. A BoilerJuice response cannot
+  redirect Home Assistant to another host, including one inside your own
+  network.
 - Diagnostics downloads are written to contain none of those either, so they
   are safe to attach to a public issue. There is a test that fails if any of
   them appears in the output.

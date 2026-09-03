@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import aiohttp
 import pytest
+import yarl
 from custom_components.boilerjuice.client import MAX_RESPONSE_BYTES, BoilerJuiceClient
 from custom_components.boilerjuice.const import LOGIN_URL, PRICE_URL, TANKS_URL
 from custom_components.boilerjuice.errors import (
@@ -12,9 +13,11 @@ from custom_components.boilerjuice.errors import (
     BoilerJuiceParseError,
     BoilerJuiceRateLimitError,
     BoilerJuiceServerError,
+    RedactedTransportError,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
+from multidict import CIMultiDict, CIMultiDictProxy
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from .helpers import PRICE_PAGE, SIGNED_IN_PAGE, TANK_URL, load_fixture, tank_page
@@ -320,3 +323,131 @@ async def test_the_password_is_only_ever_posted_to_boilerjuice(
         assert url.host == "www.boilerjuice.com"
         assert url.scheme == "https"
         assert "hunter2" in str(data)
+
+
+# --- redirects on ordinary requests, not just the login POST --------------
+
+
+async def test_a_same_host_redirect_on_a_tank_page_is_followed(
+    aioclient_mock: AiohttpClientMocker, client: BoilerJuiceClient
+) -> None:
+    mock_sign_in(aioclient_mock)
+    aioclient_mock.get(
+        TANK_URL,
+        status=302,
+        headers={"Location": "https://www.boilerjuice.com/uk/users/tanks/123456"},
+        text="",
+    )
+    aioclient_mock.get(
+        "https://www.boilerjuice.com/uk/users/tanks/123456",
+        text=tank_page(percentage=80, litres=2000),
+    )
+
+    reading = await client.async_fetch_tank("123456")
+
+    assert reading.volume_litres == 2000
+
+
+@pytest.mark.parametrize(
+    "destination",
+    [
+        pytest.param("https://evil.example.com/collect", id="off-host"),
+        pytest.param("http://www.boilerjuice.com/uk", id="downgraded-to-http"),
+        pytest.param("https://www.boilerjuice.com:8443/uk", id="odd-port"),
+        pytest.param("https://user:pw@www.boilerjuice.com/uk", id="url-credentials"),
+        pytest.param("https://127.0.0.1/admin", id="loopback"),
+        pytest.param("https://192.168.1.1/", id="private-network"),
+    ],
+)
+async def test_a_tank_page_cannot_redirect_us_anywhere_it_likes(
+    aioclient_mock: AiohttpClientMocker, client: BoilerJuiceClient, destination: str
+) -> None:
+    """Aiohttp follows ten redirects by default and validates none of them.
+
+    The login POST was hardened against this; every other request was still
+    free to point Home Assistant at an arbitrary host, including one inside
+    the user's own network.
+    """
+    mock_sign_in(aioclient_mock)
+    aioclient_mock.get(TANK_URL, status=302, headers={"Location": destination}, text="")
+
+    with pytest.raises(BoilerJuiceConnectionError):
+        await client.async_fetch_tank("123456")
+
+    # The refused destination was never requested.
+    followed = {str(call[1]) for call in aioclient_mock.mock_calls}
+    assert destination not in followed
+
+
+async def test_a_redirect_loop_is_bounded(
+    aioclient_mock: AiohttpClientMocker, client: BoilerJuiceClient
+) -> None:
+    from custom_components.boilerjuice.client import MAX_REDIRECTS
+
+    mock_sign_in(aioclient_mock)
+    aioclient_mock.get(TANK_URL, status=302, headers={"Location": TANK_URL}, text="")
+
+    with pytest.raises(BoilerJuiceConnectionError):
+        await client.async_fetch_tank("123456")
+
+    hops = [call for call in aioclient_mock.mock_calls if str(call[1]) == TANK_URL]
+    assert len(hops) <= MAX_REDIRECTS + 1
+
+
+async def test_the_tanks_listing_cannot_redirect_off_host(
+    aioclient_mock: AiohttpClientMocker, client: BoilerJuiceClient
+) -> None:
+    mock_sign_in(aioclient_mock)
+    aioclient_mock.get(
+        TANKS_URL,
+        status=302,
+        headers={"Location": "https://evil.example.com/"},
+        text="",
+    )
+
+    with pytest.raises(BoilerJuiceConnectionError):
+        await client.async_list_tank_ids()
+
+
+async def test_a_redirect_without_a_destination_on_a_get_is_refused(
+    aioclient_mock: AiohttpClientMocker, client: BoilerJuiceClient
+) -> None:
+    mock_sign_in(aioclient_mock)
+    aioclient_mock.get(TANK_URL, status=302, text="")
+
+    with pytest.raises(BoilerJuiceConnectionError):
+        await client.async_fetch_tank("123456")
+
+
+# --- the tank id must not reach the logs ----------------------------------
+
+
+def transport_error(url: str) -> aiohttp.ClientResponseError:
+    """Return the aiohttp error whose text carries the request URL."""
+    return aiohttp.ClientResponseError(
+        aiohttp.RequestInfo(yarl.URL(url), "GET", CIMultiDictProxy(CIMultiDict())),
+        (),
+        status=502,
+        message="Bad Gateway",
+    )
+
+
+async def test_a_transport_error_does_not_carry_the_tank_id(
+    aioclient_mock: AiohttpClientMocker, client: BoilerJuiceClient
+) -> None:
+    """Aiohttp's exception text includes the URL, and that names the tank."""
+    mock_sign_in(aioclient_mock)
+    aioclient_mock.get(TANK_URL, exc=transport_error(TANK_URL))
+
+    with pytest.raises(BoilerJuiceConnectionError) as raised:
+        await client.async_fetch_tank("123456")
+
+    assert "123456" not in str(raised.value)
+    assert "ClientResponseError" in str(raised.value)
+    # A cause is kept for anyone reading a traceback, but a redacted one:
+    # Home Assistant's own coordinator logs the full traceback at debug, so
+    # chaining aiohttp's exception would put the tank id there.
+    cause = raised.value.__cause__
+    assert isinstance(cause, RedactedTransportError)
+    assert "ClientResponseError" in str(cause)
+    assert "123456" not in str(cause)

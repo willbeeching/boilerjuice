@@ -9,10 +9,11 @@
 #
 # status: done | exempt | todo
 #
-# One rule is still todo: `brands`, which needs a pull request against
-# home-assistant/brands. Every other applicable rule is done or exempt, but
-# the manifest deliberately claims no quality_scale until that one closes -
-# a rating is all of its tier or none of it.
+# Every applicable rule is now done or exempt. The manifest still declares no
+# quality_scale: the scale is awarded to core integrations through Home
+# Assistant's own review, and a custom integration claiming a tier is
+# asserting something nobody granted. This file states what the checklist
+# actually shows, which is the honest version of the same information.
 
 rules:
   # --- Bronze ---
@@ -28,11 +29,16 @@ rules:
       Hourly. BoilerJuice tank readings update far less often than that, and
       the site is scraped rather than served by an API.
   brands:
-    status: todo
+    status: done
     comment: >-
-      Logo and icon exist under custom_components/boilerjuice/brand/ but have
-      not been submitted to home-assistant/brands. That is a pull request
-      against another repository, so it cannot be closed out from here.
+      icon.png, icon@2x.png, logo.png and logo@2x.png ship in
+      custom_components/boilerjuice/brand/, which is where Home Assistant
+      reads them from for a custom integration (loader.has_branding, served
+      by components/brands). That path landed in 2026.3, so on the older half
+      of the supported range - 2025.2 to 2026.2 - the images are present but
+      not displayed. Submitting them to home-assistant/brands would cover
+      that too, and is worth doing, but it is no longer what this rule asks
+      for.
   common-modules:
     status: done
     comment: coordinator.py, client.py, parser.py, models.py, consumption.py.

@@ -120,14 +120,15 @@ def test_the_tracker_is_complete_and_honest(checker) -> None:
 
 @pytest.mark.parametrize("tier", ["bronze", "silver", "gold", "platinum"])
 def test_a_claim_is_refused_while_a_bronze_rule_is_todo(checker, tier: str) -> None:
-    """The gate used to accept "platinum" with rules still outstanding."""
-    outstanding = [
-        name
-        for name, value in rules().items()
-        if (value if isinstance(value, str) else value["status"]) == "todo"
-    ]
-    assert outstanding, "this test needs at least one todo rule to be meaningful"
+    """The gate used to accept "platinum" with rules still outstanding.
 
+    The outstanding rule is introduced here rather than borrowed from the
+    real tracker, so finishing the checklist cannot quietly make this test
+    stop testing anything.
+    """
+    updated = rules()
+    updated["brands"] = {"status": "todo"}
+    write_rules(updated)
     claim(tier)
 
     with pytest.raises(SystemExit) as exit_info:

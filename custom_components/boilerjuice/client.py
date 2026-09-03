@@ -25,6 +25,7 @@ from .errors import (
     BoilerJuiceParseError,
     BoilerJuiceRateLimitError,
     BoilerJuiceServerError,
+    RedactedTransportError,
 )
 from .models import TankReading
 from .parser import (
@@ -50,6 +51,21 @@ MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
 SessionFactory = Callable[[aiohttp.ClientTimeout], aiohttp.ClientSession]
 
+
+def _redact(err: BaseException) -> RedactedTransportError:
+    """Return a cause that carries the failure's shape but no identifiers.
+
+    aiohttp's exception text includes the request URL, and both
+    ClientResponseError and the connection timeouts do. Interpolating one
+    into a message, or chaining it, put the tank id into the log.
+    """
+    status = getattr(err, "status", None)
+    detail = type(err).__name__
+    if status is not None:
+        detail = f"{detail} (HTTP {status})"
+    return RedactedTransportError(detail)
+
+
 # The only host we will ever send credentials to, or follow a redirect to.
 ALLOWED_HOST = yarl.URL(BASE_URL).host
 
@@ -57,6 +73,9 @@ ALLOWED_HOST = yarl.URL(BASE_URL).host
 # would re-post the password to wherever the redirect pointed.
 BODY_PRESERVING_REDIRECTS = (307, 308)
 REDIRECT_STATUSES = (301, 302, 303, 307, 308)
+
+# A couple of hops is normal; a chain this long is a loop or a redirector.
+MAX_REDIRECTS = 5
 
 
 class BoilerJuiceClient:
@@ -125,19 +144,39 @@ class BoilerJuiceClient:
         return raw.decode(response.charset or "utf-8", errors="replace")
 
     async def _async_get(self, url: str, description: str) -> tuple[str, str]:
-        """GET `url`, returning (body, final URL)."""
-        try:
-            async with self.session.get(url) as response:
-                self._classify(response.status, description)
-                return await self._read_text(response, description), str(response.url)
-        except aiohttp.ClientError as err:
-            raise BoilerJuiceConnectionError(
-                f"Failed to load the {description}: {err}"
-            ) from err
-        except TimeoutError as err:
-            raise BoilerJuiceConnectionError(
-                f"Timed out loading the {description}"
-            ) from err
+        """GET `url`, returning (body, final URL).
+
+        Redirects are followed by hand, one validated hop at a time. aiohttp
+        follows up to ten by default and validates none of them, so leaving
+        it to do so would let any BoilerJuice response point Home Assistant
+        at an arbitrary host - including one inside the user's own network.
+        The login POST was hardened against exactly this; every other request
+        needs the same treatment.
+        """
+        target = yarl.URL(url)
+        for _ in range(MAX_REDIRECTS + 1):
+            try:
+                async with self.session.get(target, allow_redirects=False) as response:
+                    if response.status in REDIRECT_STATUSES:
+                        location = response.headers.get("Location")
+                    else:
+                        self._classify(response.status, description)
+                        body = await self._read_text(response, description)
+                        return body, str(response.url)
+            except aiohttp.ClientError as err:
+                raise BoilerJuiceConnectionError(
+                    f"Failed to load the {description} ({type(err).__name__})"
+                ) from _redact(err)
+            except TimeoutError as err:
+                raise BoilerJuiceConnectionError(
+                    f"Timed out loading the {description}"
+                ) from _redact(err)
+
+            target = self._checked_redirect(response.status, location, base=target)
+
+        raise BoilerJuiceConnectionError(
+            f"The {description} redirected more than {MAX_REDIRECTS} times"
+        )
 
     async def _async_sign_in(self) -> None:
         """Drive the BoilerJuice sign-in flow for this session."""
@@ -176,9 +215,13 @@ class BoilerJuiceClient:
                 else:
                     body, landed_on_login = "", False
         except aiohttp.ClientError as err:
-            raise BoilerJuiceConnectionError(f"Login request failed: {err}") from err
+            raise BoilerJuiceConnectionError(
+                f"Login request failed ({type(err).__name__})"
+            ) from _redact(err)
         except TimeoutError as err:
-            raise BoilerJuiceConnectionError("Login request timed out") from err
+            raise BoilerJuiceConnectionError("Login request timed out") from _redact(
+                err
+            )
 
         if status in REDIRECT_STATUSES:
             target = self._checked_redirect(status, location)
@@ -195,7 +238,9 @@ class BoilerJuiceClient:
         self._signed_in = True
 
     @staticmethod
-    def _checked_redirect(status: int, location: str | None) -> yarl.URL:
+    def _checked_redirect(
+        status: int, location: str | None, *, base: yarl.URL | str = LOGIN_URL
+    ) -> yarl.URL:
         """Return the redirect target, refusing anything off-host.
 
         A redirect that leaves boilerjuice.com is refused outright rather
@@ -204,21 +249,27 @@ class BoilerJuiceClient:
         """
         if not location:
             raise BoilerJuiceConnectionError(
-                "BoilerJuice redirected the login request without a destination"
+                "BoilerJuice sent a redirect without a destination"
             )
 
-        target = yarl.URL(LOGIN_URL).join(yarl.URL(location))
-        if target.scheme != "https" or target.host != ALLOWED_HOST:
+        target = yarl.URL(base).join(yarl.URL(location))
+        if (
+            target.scheme != "https"
+            or target.host != ALLOWED_HOST
+            # Credentials smuggled into the URL, or a non-standard port, are
+            # not something BoilerJuice has any reason to send us.
+            or target.user is not None
+            or target.password is not None
+            or target.port not in (None, 443)
+        ):
             # Deliberately vague: the destination is attacker-controlled in
             # the case this guards against, so it does not go in the log.
             raise BoilerJuiceConnectionError(
-                "BoilerJuice redirected the login somewhere unexpected; "
-                "refusing to follow it"
+                "BoilerJuice redirected somewhere unexpected; refusing to follow it"
             )
         if status in BODY_PRESERVING_REDIRECTS:
             _LOGGER.debug(
-                "Following a %s after signing in with a GET rather than "
-                "re-sending the credentials",
+                "Following a %s with a GET rather than re-sending the request body",
                 status,
             )
         return target

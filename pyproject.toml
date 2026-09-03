@@ -53,6 +53,9 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Set explicitly rather than left to the default, which pytest-asyncio warns
+# about on the minimum lane. Every test gets its own loop.
+asyncio_default_fixture_loop_scope = "function"
 addopts = "-p no:randomly"
 
 [tool.coverage.run]
