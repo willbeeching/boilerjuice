@@ -12,7 +12,7 @@ token or a response body. A scraper's logs end up in bug reports.
 from __future__ import annotations
 
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -230,6 +230,6 @@ class BoilerJuiceClient:
         try:
             body, _ = await self._async_get(PRICE_URL, "BoilerJuice price page")
             return parse_price(body)
-        except Exception as err:  # noqa: BLE001 - the price is optional
+        except Exception as err:
             _LOGGER.debug("Could not refresh the oil price: %s", err)
             return None

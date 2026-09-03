@@ -4,10 +4,6 @@ from __future__ import annotations
 
 import pathlib
 
-from homeassistant.core import HomeAssistant
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
-
 from custom_components.boilerjuice.const import (
     CONF_EMAIL,
     CONF_PASSWORD,
@@ -17,6 +13,9 @@ from custom_components.boilerjuice.const import (
     PRICE_URL,
     TANKS_URL,
 )
+from homeassistant.core import HomeAssistant
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 FIXTURE_DIR = pathlib.Path(__file__).parent / "fixtures"
 
@@ -109,7 +108,7 @@ async def setup_account(
     return entry
 
 
-def coordinator_of(entry) -> "BoilerJuiceDataUpdateCoordinator":  # noqa: F821
+def coordinator_of(entry) -> BoilerJuiceDataUpdateCoordinator:  # noqa: F821
     """Return a loaded entry's coordinator."""
     return entry.runtime_data.coordinator
 

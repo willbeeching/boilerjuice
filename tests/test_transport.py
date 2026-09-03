@@ -4,11 +4,6 @@ from __future__ import annotations
 
 import aiohttp
 import pytest
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers.update_coordinator import UpdateFailed
-from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
-
 from custom_components.boilerjuice.const import (
     CONF_KWH_PER_LITRE,
     DEFAULT_KWH_PER_LITRE,
@@ -19,6 +14,10 @@ from custom_components.boilerjuice.const import (
 from custom_components.boilerjuice.coordinator import BoilerJuiceDataUpdateCoordinator
 from custom_components.boilerjuice.errors import BoilerJuiceConnectionError
 from custom_components.boilerjuice.storage import STORAGE_VERSION
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.update_coordinator import UpdateFailed
+from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from .helpers import (
     PRICE_PAGE,

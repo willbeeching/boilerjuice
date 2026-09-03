@@ -1,0 +1,9 @@
+# Linting and type checking. Kept separate from the test lanes so a Home
+# Assistant version bump cannot drag the linters with it.
+#
+# actionlint is not here: it is a Go binary, downloaded by digest in CI (see
+# .github/workflows/ci.yaml) rather than built from an sdist that needs a Go
+# toolchain.
+ruff==0.16.6
+mypy==2.3.1
+pip-audit==2.9.0

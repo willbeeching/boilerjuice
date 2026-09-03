@@ -1,0 +1,5 @@
+# Only for the manual diagnostic scripts in this directory. The integration
+# itself declares its dependencies in custom_components/boilerjuice/manifest.json.
+requests==2.32.3
+beautifulsoup4==4.15.0
+python-dotenv==1.0.1

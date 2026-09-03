@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json
 
-from homeassistant.core import HomeAssistant
-from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
-
 from custom_components.boilerjuice.diagnostics import (
     async_get_config_entry_diagnostics,
 )
+from homeassistant.core import HomeAssistant
+from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from .helpers import load_fixture, mock_site, setup_account
 

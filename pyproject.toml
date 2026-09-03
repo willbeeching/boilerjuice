@@ -1,33 +1,50 @@
-[tool.black]
+[tool.ruff]
 line-length = 88
-target-version = ['py311']
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-    \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | _build
-  | buck-out
-  | build
-  | dist
-)/
-'''
+target-version = "py313"
+src = ["custom_components", "tests"]
 
-[tool.isort]
-profile = "black"
-line_length = 88
-multi_line_output = 3
-include_trailing_comma = true
-force_grid_wrap = 0
-use_parentheses = true
-ensure_newline_before_comments = true
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # import sorting
+    "UP",     # pyupgrade
+    "B",      # bugbear
+    "C4",     # comprehensions
+    "SIM",    # simplify
+    "RUF",    # ruff-specific
+    "ASYNC",  # async correctness
+    "D",      # docstrings
+    "T20",    # no stray print()
+]
+ignore = [
+    "D203",  # conflicts with D211
+    "D213",  # conflicts with D212
+    "E501",  # line length is the formatter's job
+]
 
+[tool.ruff.lint.per-file-ignores]
+# Tests read better with plain asserts, long fixture literals and private
+# access into the object under test.
+"tests/*" = ["D100", "D103", "SIM117"]
+"scripts/*" = ["D", "T20"]
 
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
 
+[tool.mypy]
+python_version = "3.13"
+strict = true
+packages = ["custom_components.boilerjuice"]
+# Home Assistant ships py.typed but its own annotations are not complete
+# enough for a downstream strict run; these are the seams where that shows.
+disallow_untyped_decorators = false
+warn_unused_ignores = false
 
+[[tool.mypy.overrides]]
+module = ["bs4.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

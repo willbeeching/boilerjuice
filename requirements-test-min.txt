@@ -1,0 +1,7 @@
+# Minimum supported Home Assistant lane. This plugin version pins the Home
+# Assistant release named below, which must match the floor in hacs.json;
+# scripts/check_versions.py enforces that. Bump both together, never one
+# alone: a minimum nobody tests is a minimum nobody supports.
+# home-assistant: 2025.2.5
+pytest-homeassistant-custom-component==0.13.215
+beautifulsoup4==4.15.0

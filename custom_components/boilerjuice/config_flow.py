@@ -142,7 +142,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         tank_id = validate_tank_id(config.pop(CONF_TANK_ID, None))
         result = await self.async_step_user(config)
         if tank_id and result["type"] == "create_entry":
-            result["data"][CONF_TANK_ID] = tank_id
+            result["data"] = {**result["data"], CONF_TANK_ID: tank_id}
         return result
 
     # ------------------------------------------------------------------
@@ -223,7 +223,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
 
         try:
-            _, tank_ids = await async_validate_account(self.hass, entry.data)
+            _, tank_ids = await async_validate_account(self.hass, dict(entry.data))
         except (InvalidAuth, CannotConnect, NoTanks):
             # The account is unreachable right now; offer the tanks we know.
             tank_ids = list(entry.options.get(CONF_TANKS) or [])

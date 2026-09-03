@@ -1,5 +1,5 @@
-# Test-only dependencies. Home Assistant itself, aiohttp and every other
-# runtime library are pulled in by pytest-homeassistant-custom-component,
-# which pins the Home Assistant version the suite runs against.
-pytest-homeassistant-custom-component==0.13.*
-beautifulsoup4>=4.12.0
+# Current Home Assistant lane. pytest-homeassistant-custom-component pins the
+# Home Assistant version the suite runs against, so pinning it exactly pins
+# the whole test environment.
+pytest-homeassistant-custom-component==0.13.363
+beautifulsoup4==4.15.0

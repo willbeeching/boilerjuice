@@ -21,10 +21,15 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfLength, UnitOfVolume
+from homeassistant.const import (
+    PERCENTAGE,
+    EntityCategory,
+    UnitOfEnergy,
+    UnitOfLength,
+    UnitOfVolume,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -55,8 +60,8 @@ def _rounded(key: str, places: int = 1) -> Callable[[dict[str, Any]], StateType]
 
 def _cost_per_kwh(data: dict[str, Any]) -> StateType:
     """Return the cost of a kWh of heat, in pounds."""
-    price = data.get("current_price_pence")
-    energy_content = data.get("kwh_per_litre")
+    price: float | None = data.get("current_price_pence")
+    energy_content: float | None = data.get("kwh_per_litre")
     if price is None or not energy_content:
         return None
     return round((price / energy_content) / 100, 4)
@@ -64,13 +69,16 @@ def _cost_per_kwh(data: dict[str, Any]) -> StateType:
 
 def _oil_price(data: dict[str, Any]) -> StateType:
     """Return the oil price in pounds per litre."""
-    price = data.get("current_price_pence")
+    price: float | None = data.get("current_price_pence")
     return None if price is None else round(price / 100, 2)
 
 
 def _current_season(data: dict[str, Any]) -> StateType:
     """Return this season's average daily consumption."""
-    return data.get("seasonal_stats", {}).get("current_season", {}).get("avg")
+    average: float | None = (
+        data.get("seasonal_stats", {}).get("current_season", {}).get("avg")
+    )
+    return average
 
 
 def _price_attributes(data: dict[str, Any]) -> dict[str, Any]:

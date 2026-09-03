@@ -5,12 +5,6 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
-from homeassistant import config_entries, data_entry_flow
-from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
-from homeassistant.core import HomeAssistant
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
-
 from custom_components.boilerjuice.const import (
     CONF_KWH_PER_LITRE,
     CONF_TANK_ID,
@@ -20,6 +14,11 @@ from custom_components.boilerjuice.const import (
     PRICE_URL,
     TANKS_URL,
 )
+from homeassistant import config_entries, data_entry_flow
+from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
+from homeassistant.core import HomeAssistant
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from .helpers import (
     PRICE_PAGE,
@@ -44,8 +43,11 @@ def mock_account(
     *,
     clear: bool = True,
 ):
-    """Register a whole working account. The mocker replays the first match,
-    so an existing registration has to be cleared to change a response."""
+    """Register a whole working account.
+
+    The mocker replays the first match, so an existing registration has to be
+    cleared before a different response can be staged.
+    """
     if clear:
         aioclient_mock.clear_requests()
     aioclient_mock.get(LOGIN_URL, text=load_fixture("login.html"))

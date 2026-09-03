@@ -16,6 +16,7 @@ from homeassistant.core import HomeAssistant
 from .const import CONF_TANK_ID, CONF_TANKS, DEFAULT_KWH_PER_LITRE
 from .runtime import BoilerJuiceConfigEntry
 from .storage import STORAGE_VERSION
+from .tank import TankTracker
 
 # The scraped fields worth knowing the presence of. Their values are not
 # secret, but "was it found at all" is what diagnoses a layout change.
@@ -33,7 +34,9 @@ TRACKED_FIELDS = (
 )
 
 
-def _tank_diagnostics(index: int, state: dict[str, Any], tracker) -> dict[str, Any]:
+def _tank_diagnostics(
+    index: int, state: dict[str, Any], tracker: TankTracker
+) -> dict[str, Any]:
     """Summarise one tank without naming or identifying it."""
     return {
         # Positional, not the real id: the id is account data.

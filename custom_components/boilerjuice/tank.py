@@ -8,6 +8,7 @@ owns the lock, the clock and the persistence.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -27,7 +28,7 @@ class TankTracker:
         tank_id: str,
         state: ConsumptionState | None = None,
         *,
-        midnight,
+        midnight: Callable[[str], datetime],
     ) -> None:
         """Start tracking `tank_id` from `state`."""
         self.tank_id = tank_id

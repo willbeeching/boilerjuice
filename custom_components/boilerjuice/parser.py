@@ -10,6 +10,7 @@ import json
 import logging
 import math
 import re
+from collections.abc import Callable
 from typing import Any
 
 from bs4 import BeautifulSoup
@@ -50,7 +51,9 @@ def finite(value: Any) -> float | None:
     return number
 
 
-def _bounded(value: Any, low: float, high: float, *, inclusive_low: bool = True):
+def _bounded(
+    value: Any, low: float, high: float, *, inclusive_low: bool = True
+) -> float | None:
     """Return a finite number inside the given bounds, or None."""
     number = finite(value)
     if number is None:
@@ -111,6 +114,22 @@ def validate_tank_id(value: Any) -> str | None:
     return text if _TANK_ID_RE.match(text) else None
 
 
+def _attribute(element: Any, name: str) -> str | None:
+    """Return one HTML attribute as a plain string, or None.
+
+    Beautiful Soup hands back a list for attributes it knows to be
+    multi-valued, which no caller here wants.
+    """
+    if element is None:
+        return None
+    value = element.get(name)
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return " ".join(str(item) for item in value) or None
+    return str(value)
+
+
 def looks_like_login_page(html: str) -> bool:
     """Return True when ``html`` is the BoilerJuice sign-in page.
 
@@ -137,7 +156,8 @@ def parse_tank_ids(html: str) -> list[str]:
     soup = BeautifulSoup(html, "html.parser")
     tank_ids: list[str] = []
     for link in soup.find_all("a", href=_TANK_LINK_RE):
-        match = _TANK_LINK_RE.search(link["href"])
+        href = _attribute(link, "href")
+        match = None if href is None else _TANK_LINK_RE.search(href)
         if not match:
             continue
         tank_id = validate_tank_id(match.group(1))
@@ -146,13 +166,17 @@ def parse_tank_ids(html: str) -> list[str]:
     return tank_ids
 
 
-def _first_input_value(soup: BeautifulSoup, element_ids: tuple[str, ...], convert):
+def _first_input_value(
+    soup: BeautifulSoup,
+    element_ids: tuple[str, ...],
+    convert: Callable[[Any], int | None],
+) -> int | None:
     """Return the first of `element_ids` whose value survives `convert`."""
     for element_id in element_ids:
         element = soup.find("input", {"id": element_id})
         if element is None:
             continue
-        converted = convert(element.get("value"))
+        converted = convert(_attribute(element, "value"))
         if converted is not None:
             return converted
     return None
@@ -166,17 +190,19 @@ def _parse_level(soup: BeautifulSoup) -> float | None:
     oil_level = container.find("div", {"class": "oil-level"})
     if oil_level is None:
         return None
-    return percentage(oil_level.get("data-percentage"))
+    return percentage(_attribute(oil_level, "data-percentage"))
 
 
 def _parse_volume(soup: BeautifulSoup) -> int | None:
     """Return the oil volume, which only appears as free text."""
     candidates = soup.find_all(
-        string=lambda text: text
-        and any(word in text.lower() for word in ["litre", "volume", "oil level"])
+        string=lambda text: (
+            text
+            and any(word in text.lower() for word in ["litre", "volume", "oil level"])
+        )
     )
     for text in candidates:
-        lowered = text.strip().lower()
+        lowered = str(text).strip().lower()
         if "litres of oil" not in lowered and "litres oil" not in lowered:
             continue
         match = _OIL_VOLUME_RE.search(lowered)
@@ -230,10 +256,9 @@ def _extract_json_array(script_text: str) -> str | None:
 def _parse_model(soup: BeautifulSoup) -> tuple[str | None, str | None, str | None]:
     """Return (model_id, model, manufacturer) from the page's inline JSON."""
     element = soup.find("input", {"id": "tankModelInput"})
-    if element is None or not element.get("value"):
+    model_id = _attribute(element, "value")
+    if model_id is None:
         return None, None, None
-
-    model_id = element["value"]
 
     for script in soup.find_all("script"):
         if not (script.string and "var jsonData = " in script.string):
@@ -288,15 +313,8 @@ def parse_tank_page(html: str, tank_id: str) -> TankReading:
         height_cm=_first_input_value(
             soup, ("internal_height", "tank-height-count"), height_cm
         ),
-        name=(
-            element["value"]
-            if (
-                element := soup.find(
-                    "input", {"id": "tank_user_tanks_attributes_0_name"}
-                )
-            )
-            and element.get("value")
-            else None
+        name=_attribute(
+            soup.find("input", {"id": "tank_user_tanks_attributes_0_name"}), "value"
         ),
         model=model,
         model_id=model_id,

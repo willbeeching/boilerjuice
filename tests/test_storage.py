@@ -3,10 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import issue_registry as ir
-from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
-
 from custom_components.boilerjuice.const import DOMAIN
 from custom_components.boilerjuice.coordinator import BoilerJuiceDataUpdateCoordinator
 from custom_components.boilerjuice.storage import (
@@ -21,6 +17,9 @@ from custom_components.boilerjuice.storage import (
     document_from_state,
     state_from_document,
 )
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
+from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from .helpers import make_entry, mock_site, tank_page, tracker_of
 

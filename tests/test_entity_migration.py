@@ -3,11 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
-
 from custom_components.boilerjuice.const import (
     CONF_EMAIL,
     CONF_PASSWORD,
@@ -15,6 +10,10 @@ from custom_components.boilerjuice.const import (
     DOMAIN,
 )
 from custom_components.boilerjuice.sensor import SENSORS
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from .helpers import TANK_ID, mock_site, tank_page
 
@@ -29,7 +28,7 @@ LEGACY_IDS = {
 
 @pytest.fixture
 def upgraded_from_v1(hass: HomeAssistant) -> MockConfigEntry:
-    """An entry and registry as an existing v1.3.1 install would have them."""
+    """Return an entry and registry as an existing v1.3.1 install has them."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         version=1,

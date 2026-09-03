@@ -4,10 +4,6 @@ from __future__ import annotations
 
 import aiohttp
 import pytest
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_create_clientsession
-from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
-
 from custom_components.boilerjuice.client import (
     MAX_RESPONSE_BYTES,
     BoilerJuiceClient,
@@ -20,13 +16,16 @@ from custom_components.boilerjuice.errors import (
     BoilerJuiceRateLimitError,
     BoilerJuiceServerError,
 )
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_create_clientsession
+from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from .helpers import PRICE_PAGE, SIGNED_IN_PAGE, TANK_URL, load_fixture, tank_page
 
 
 @pytest.fixture
 async def client(hass: HomeAssistant) -> BoilerJuiceClient:
-    """A client backed by a Home Assistant-created session."""
+    """Return a client backed by a Home Assistant-created session."""
     made = BoilerJuiceClient(
         lambda timeout: async_create_clientsession(
             hass, cookie_jar=aiohttp.CookieJar(), timeout=timeout

@@ -8,19 +8,18 @@ account", which silently wiped the other tank's history.
 from __future__ import annotations
 
 import pytest
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers import entity_registry as er
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
-
 from custom_components.boilerjuice import (
     SERVICE_RESET_CONSUMPTION,
     SERVICE_SET_CONSUMPTION,
     async_setup_services,
 )
 from custom_components.boilerjuice.const import DOMAIN
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from .helpers import coordinator_of, reading_of, setup_account, tracker_of
 
@@ -87,7 +86,7 @@ async def test_no_target_with_several_accounts_is_refused(
 async def test_a_device_target_reaches_only_that_account(
     hass: HomeAssistant, two_accounts
 ) -> None:
-    first, second = two_accounts
+    _, second = two_accounts
     device_registry = dr.async_get(hass)
     device = device_registry.async_get_device(identifiers={(DOMAIN, "111111")})
     assert device is not None

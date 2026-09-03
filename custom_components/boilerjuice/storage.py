@@ -208,7 +208,7 @@ def state_from_legacy_document(document: Any) -> ConsumptionState:
         # v1 wrote 0.0 for "nothing measured yet", which is indistinguishable
         # from a genuine zero. Treat it as "not measured" so the sensor shows
         # unknown until a real day is recorded.
-        daily_litres=None if not daily else daily,
+        daily_litres=daily or None,
         reference_volume=(
             None
             if document.get("reference_volume") is None
@@ -290,10 +290,12 @@ class ConsumptionStore:
         self._hass = hass
         self._entry_id = entry_id
         self._tank_id = tank_id
-        self._store: Store = Store(
+        self._store: Store[dict[str, Any]] = Store(
             hass, STORAGE_VERSION, f"{DOMAIN}.{entry_id}", private=True
         )
-        self._legacy: Store = Store(hass, LEGACY_STORAGE_VERSION, LEGACY_STORAGE_KEY)
+        self._legacy: Store[dict[str, Any]] = Store(
+            hass, LEGACY_STORAGE_VERSION, LEGACY_STORAGE_KEY
+        )
 
     @property
     def key(self) -> str:
@@ -327,7 +329,7 @@ class ConsumptionStore:
 
         return AccountState(), None
 
-    def _slot_in(self, shared: dict) -> str | None:
+    def _slot_in(self, shared: dict[str, Any]) -> str | None:
         """Return the key in the shared v1 document that belongs to us."""
         if self._entry_id in shared:
             return self._entry_id

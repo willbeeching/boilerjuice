@@ -1,0 +1,62 @@
+name: Bug report
+description: Something in the integration is not working
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not paste your BoilerJuice email, password, tank ID or raw
+        page HTML. The integration's diagnostics download is written to
+        contain none of those, so it is the safest thing to attach.
+  - type: input
+    id: integration-version
+    attributes:
+      label: Integration version
+      placeholder: "2.0.0"
+    validations:
+      required: true
+  - type: input
+    id: ha-version
+    attributes:
+      label: Home Assistant version
+      placeholder: "2026.9.0"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >-
+        With debug logging enabled for custom_components.boilerjuice. Check
+        them for anything account-specific before pasting.
+      render: text
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: >-
+        Settings, Devices & Services, BoilerJuice, three dots, Download
+        diagnostics.
+      render: json
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I am on the latest release of the integration
+          required: true
+        - label: I have removed any account details from what I pasted above
+          required: true

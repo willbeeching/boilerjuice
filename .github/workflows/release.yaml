@@ -5,86 +5,134 @@ on:
     tags:
       - "v*.*.*"
 
+# The release job needs to create a release; nothing else needs write access.
+permissions:
+  contents: read
+
 jobs:
-  release:
-    name: Create Release
+  validate:
+    name: Validate the tagged commit
+    # A release must not be able to publish something CI has never seen. This
+    # runs the whole of CI against the exact commit the tag points at.
+    uses: ./.github/workflows/ci.yaml
+
+  package:
+    name: Build and inspect the archive
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
+      digest: ${{ steps.digest.outputs.SHA256 }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Read the version from the tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "NUMBER=${VERSION#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Check the tag matches the manifest and the HACS floor
+        run: python scripts/check_versions.py "${{ steps.version.outputs.VERSION }}"
+
+      - name: Build the archive
+        run: |
+          cd custom_components
+          zip -r ../boilerjuice.zip boilerjuice -x '*.pyc' -x '*__pycache__*'
+
+      - name: Inspect the archive
+        # An archive that is missing a module, or carrying something it should
+        # not, installs broken. Check before anything is published.
+        run: python scripts/check_archive.py boilerjuice.zip
+
+      - name: Record the digest
+        id: digest
+        run: echo "SHA256=$(sha256sum boilerjuice.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Keep the archive for the release job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: boilerjuice-zip
+          path: boilerjuice.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    needs: package
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - name: Get version from tag
-        id: get_version
-        run: |
-          VERSION=${GITHUB_REF#refs/tags/}
-          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-          echo "VERSION_NUMBER=${VERSION#v}" >> $GITHUB_OUTPUT
+      - name: Download the archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: boilerjuice-zip
 
-      - name: Get previous tag
-        id: prev_tag
-        run: |
-          PREV_TAG=$(git describe --abbrev=0 --tags $(git rev-list --tags --skip=1 --max-count=1) 2>/dev/null || echo "")
-          echo "PREV_TAG=$PREV_TAG" >> $GITHUB_OUTPUT
-
-      - name: Generate changelog
+      - name: Generate the changelog
         id: changelog
         run: |
-          if [ -n "${{ steps.prev_tag.outputs.PREV_TAG }}" ]; then
-            echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
-            git log --pretty=format:"- %s" ${{ steps.prev_tag.outputs.PREV_TAG }}..${{ steps.get_version.outputs.VERSION }} >> $GITHUB_OUTPUT
-            echo "" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
-          else
-            echo "CHANGELOG=Initial release" >> $GITHUB_OUTPUT
-          fi
+          PREV_TAG="$(git describe --abbrev=0 --tags "${{ needs.package.outputs.version }}^" 2>/dev/null || true)"
+          echo "PREV_TAG=$PREV_TAG" >> "$GITHUB_OUTPUT"
+          {
+            echo "CHANGELOG<<CHANGELOG_EOF"
+            if [ -n "$PREV_TAG" ]; then
+              git log --pretty=format:'- %s' "$PREV_TAG..${{ needs.package.outputs.version }}"
+              echo
+            else
+              echo "- Initial release"
+            fi
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+      - name: Create the release with its archive
+        # One call, so the release and its asset appear together rather than
+        # the release existing for a while with nothing attached to it.
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          tag_name: ${{ steps.get_version.outputs.VERSION }}
-          name: "BoilerJuice ${{ steps.get_version.outputs.VERSION_NUMBER }}"
+          tag_name: ${{ needs.package.outputs.version }}
+          name: BoilerJuice ${{ needs.package.outputs.version }}
+          files: boilerjuice.zip
+          draft: false
+          prerelease: false
           body: |
-            ## 📋 Changes in this Release
+            ## Changes
 
             ${{ steps.changelog.outputs.CHANGELOG }}
 
-            ## 📦 Installation
+            ## Installation
 
-            ### HACS (Recommended)
-            1. Open HACS in Home Assistant
-            2. Go to **Integrations**
-            3. Click the three dots (⋮) in the top right
-            4. Select **Custom repositories**
-            5. Add this repository URL: `https://github.com/willbeeching/boilerjuice`
-            6. Select **Integration** as category
-            7. Click **Add**
-            8. Find **BoilerJuice** and click **Download**
-            9. Restart Home Assistant
+            ### HACS
 
-            ### Manual Installation
-            1. Download `boilerjuice.zip` from the assets below
-            2. Extract to your Home Assistant `config/custom_components/` directory
-            3. Restart Home Assistant
-            4. Add the integration via **Settings** → **Devices & Services** → **Add Integration**
+            Add `https://github.com/willbeeching/boilerjuice` as a custom
+            repository with category Integration, download BoilerJuice, then
+            restart Home Assistant.
 
-            ---
+            ### Manual
 
-            **Full Changelog**: https://github.com/${{ github.repository }}/compare/${{ steps.prev_tag.outputs.PREV_TAG }}...${{ steps.get_version.outputs.VERSION }}
-          draft: false
-          prerelease: false
+            Download `boilerjuice.zip` below, extract it into
+            `config/custom_components/`, and restart Home Assistant.
 
-      - name: Create ZIP archive
-        run: |
-          cd custom_components
-          zip -r ../boilerjuice.zip boilerjuice/
+            ## Verifying the download
 
-      - name: Upload ZIP to release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ steps.get_version.outputs.VERSION }}
-          files: boilerjuice.zip
+            ```
+            sha256sum boilerjuice.zip
+            ${{ needs.package.outputs.digest }}
+            ```
 
+            This release was built from ${{ github.sha }}, which passed the
+            full CI suite (lint, strict typing, both supported Home Assistant
+            versions, hassfest and HACS validation) before publication.
+
+            **Full changelog**: https://github.com/${{ github.repository }}/compare/${{ steps.changelog.outputs.PREV_TAG }}...${{ needs.package.outputs.version }}

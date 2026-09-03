@@ -8,7 +8,7 @@ collects them: they live outside `tests/` and no longer carry `test_` names.
 Run them from the repository root with the extra dependencies installed:
 
 ```
-pip install -r requirements.txt
+pip install -r scripts/requirements.txt
 ```
 
 ## `check_live_account.py`

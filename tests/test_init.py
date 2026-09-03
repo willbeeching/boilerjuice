@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import pytest
-from homeassistant.config_entries import ConfigEntryState
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
-from homeassistant.setup import async_setup_component
-from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
-
 from custom_components.boilerjuice import (
     SERVICE_RESET_CONSUMPTION,
     SERVICE_SET_CONSUMPTION,
 )
 from custom_components.boilerjuice.const import CONF_EMAIL, CONF_PASSWORD, DOMAIN
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
+from homeassistant.setup import async_setup_component
+from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from .helpers import (
     load_fixture,
@@ -137,9 +136,8 @@ async def test_a_version_1_entry_is_migrated_without_touching_entities(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
     """Upgrading must not rename an entity or duplicate a device."""
-    from pytest_homeassistant_custom_component.common import MockConfigEntry
-
     from custom_components.boilerjuice.const import CONF_TANK_ID
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
 
     mock_site(aioclient_mock, tank_html=tank_page(percentage=80, litres=2000))
     entry = MockConfigEntry(

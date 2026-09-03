@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
-from typing import Any, Callable, Union
+from typing import Any
 
 import aiohttp
 from homeassistant.config_entries import ConfigEntry
@@ -67,7 +68,7 @@ class BoilerJuiceDataUpdateCoordinator(
     """Fetch one account's tanks and maintain their consumption history."""
 
     def __init__(
-        self, hass: HomeAssistant, config: Union[ConfigEntry, dict[str, Any]]
+        self, hass: HomeAssistant, config: ConfigEntry | dict[str, Any]
     ) -> None:
         """Initialize coordinator."""
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=SCAN_INTERVAL)
@@ -131,8 +132,11 @@ class BoilerJuiceDataUpdateCoordinator(
             self.hass, cookie_jar=aiohttp.CookieJar(), timeout=timeout
         )
 
-    def _config_value(self, key: str, *, required: bool = False, default: Any = None):
+    def _config_value(
+        self, key: str, *, required: bool = False, default: Any = None
+    ) -> Any:
         """Read a value from the entry's options, then its data."""
+        data: Mapping[str, Any]
         if isinstance(self._config, ConfigEntry):
             if key in self._config.options:
                 return self._config.options[key]

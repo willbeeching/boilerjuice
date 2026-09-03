@@ -8,11 +8,6 @@ from the previous good reading to that zero was booked as real consumption.
 from __future__ import annotations
 
 import pytest
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
-
 from custom_components.boilerjuice.const import (
     CONF_EMAIL,
     CONF_KWH_PER_LITRE,
@@ -23,6 +18,10 @@ from custom_components.boilerjuice.const import (
     TANKS_URL,
 )
 from custom_components.boilerjuice.coordinator import BoilerJuiceDataUpdateCoordinator
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from .helpers import (
     SIGNED_IN_PAGE,
@@ -219,7 +218,7 @@ async def test_kwh_follows_the_configured_energy_content(
     hass: HomeAssistant,
     aioclient_mock: AiohttpClientMocker,
 ) -> None:
-    """kWh is derived from litres with the configured factor, not 10.35."""
+    """KWh is derived from litres with the configured factor, not 10.35."""
     config_entry = MockConfigEntry(
         domain=DOMAIN,
         data={

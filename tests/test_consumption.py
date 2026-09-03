@@ -6,7 +6,6 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pytest
-
 from custom_components.boilerjuice import consumption
 from custom_components.boilerjuice.models import TankReading
 

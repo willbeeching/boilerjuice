@@ -9,7 +9,6 @@ then recorded as the whole tank being burnt in one hour.
 from __future__ import annotations
 
 import pytest
-
 from custom_components.boilerjuice.errors import (
     BoilerJuiceAuthError,
     BoilerJuiceParseError,

@@ -3,11 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
-
 from custom_components.boilerjuice import SERVICE_RESET_CONSUMPTION
 from custom_components.boilerjuice.const import (
     CONF_EMAIL,
@@ -19,6 +14,10 @@ from custom_components.boilerjuice.const import (
     TANKS_URL,
 )
 from custom_components.boilerjuice.coordinator import MISSING_LISTINGS_BEFORE_REMOVAL
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from .helpers import (
     PRICE_PAGE,
@@ -58,7 +57,7 @@ def mock_account(
 async def account(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> MockConfigEntry:
-    """An unpinned account that starts out with two tanks."""
+    """Return an unpinned account that starts out with two tanks."""
     mock_account(aioclient_mock, TWO_TANKS)
     entry = MockConfigEntry(
         domain=DOMAIN,

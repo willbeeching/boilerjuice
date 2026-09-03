@@ -8,8 +8,10 @@ coordinator decides when to apply the results; this module only computes.
 from __future__ import annotations
 
 import statistics
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any
 
 from .models import TankReading
 
@@ -170,7 +172,11 @@ def average(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
-def trim_history(totals: dict[str, float], now: datetime, midnight) -> DatedHistory:
+def trim_history(
+    totals: dict[str, float],
+    now: datetime,
+    midnight: Callable[[str], datetime],
+) -> DatedHistory:
     """Collapse history to one entry per day and drop anything too old.
 
     Seasonal averages need every season represented, so a short window would
@@ -187,12 +193,16 @@ def trim_history(totals: dict[str, float], now: datetime, midnight) -> DatedHist
     ]
 
 
-def seasonal_stats(totals: dict[str, float], now: datetime, midnight) -> dict:
+def seasonal_stats(
+    totals: dict[str, float],
+    now: datetime,
+    midnight: Callable[[str], datetime],
+) -> dict[str, Any]:
     """Summarise consumption by season and by month."""
     if not totals:
         return {}
 
-    stats: dict = {season: [] for season in SEASONS}
+    stats: dict[str, Any] = {season: [] for season in SEASONS}
     stats["monthly"] = {}
     stats["current_season"] = {"name": "", "avg": 0.0, "min": 0.0, "max": 0.0}
 

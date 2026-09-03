@@ -6,89 +6,158 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+  workflow_call:
+
+# Nothing here writes to the repository.
+permissions:
+  contents: read
+
+env:
+  # The version the linters and the current test lane run on. The minimum
+  # lane pins its own interpreter below.
+  PYTHON_VERSION: "3.13"
 
 jobs:
-  validate:
-    name: Code Quality Checks
+  lint:
+    name: Lint and types
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install flake8 black isort
+          pip install -r requirements-dev.txt -r requirements-test.txt
 
-      - name: Check code formatting with Black
+      - name: Check formatting
+        run: ruff format --check custom_components tests scripts
+
+      - name: Lint
+        run: ruff check custom_components tests scripts
+
+      - name: Type check
+        run: mypy
+
+      - name: Lint the workflows
+        # Downloaded by pinned version and verified by digest, rather than
+        # trusting another action to lint the actions.
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+          ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
         run: |
-          black --check custom_components/boilerjuice/
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          echo "${ACTIONLINT_SHA256}  ${archive}" | sha256sum --check --strict
+          tar xzf "$archive" actionlint
+          ./actionlint
 
-      - name: Check import sorting with isort
-        run: |
-          isort --check-only custom_components/boilerjuice/
-
-      - name: Lint with flake8
-        run: |
-          # Stop the build if there are Python syntax errors or undefined names
-          flake8 custom_components/boilerjuice/ --count --select=E9,F63,F7,F82 --show-source --statistics
-          # Exit-zero treats all errors as warnings
-          flake8 custom_components/boilerjuice/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-
-  tests:
-    name: Tests
+  test:
+    name: Tests (Home Assistant ${{ matrix.lane }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The floor declared in hacs.json, and the current release. A
+          # minimum nobody tests is a minimum nobody supports.
+          - lane: minimum
+            requirements: requirements-test-min.txt
+          - lane: current
+            requirements: requirements-test.txt
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install test dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-test.txt
+          pip install -r ${{ matrix.requirements }}
+
+      - name: Report the Home Assistant version under test
+        run: python -c "from homeassistant.const import __version__; print(__version__)"
 
       - name: Run tests
         # The suite is entirely offline: pytest-homeassistant-custom-component
-        # blocks sockets, and every BoilerJuice response comes from a fixture.
+        # blocks sockets and every BoilerJuice response comes from a fixture.
         # No BoilerJuice credentials exist in CI and none are needed.
-        run: |
-          pytest --cov=custom_components.boilerjuice --cov-report=term-missing --cov-report=json
+        run: pytest --cov=custom_components.boilerjuice --cov-report=term-missing --cov-report=json
 
       - name: Enforce per-module coverage
         run: python scripts/check_module_coverage.py coverage.json 95
 
-  hacs:
-    name: HACS Validation
+  audit:
+    name: Dependency audit
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install pip-audit
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Audit the integration's own dependencies
+        run: |
+          python - <<'PY' > manifest-requirements.txt
+          import json, pathlib
+          manifest = json.loads(
+              pathlib.Path("custom_components/boilerjuice/manifest.json").read_text()
+          )
+          print("\n".join(manifest["requirements"]))
+          PY
+          pip-audit --requirement manifest-requirements.txt --strict
+
+  versions:
+    name: Version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Check the manifest, hacs.json and the quality scale agree
+        run: python scripts/check_versions.py
+
+  hacs:
+    name: HACS validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: HACS validation
-        uses: hacs/action@main
+        uses: hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa # main
         with:
           category: integration
 
   hassfest:
-    name: Hassfest Validation
+    name: Hassfest validation
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Hassfest validation
-        uses: home-assistant/actions/hassfest@master
-
-
-
-
+        uses: home-assistant/actions/hassfest@a7c616ce81ccda50150bf1595786c71b1883fabb # master

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Iterable
+from collections.abc import Container, Iterable
+from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import SOURCE_IMPORT
@@ -74,7 +75,7 @@ def _as_list(value: Any) -> list[str]:
 
 
 def _entry_ids_for_devices(
-    hass: HomeAssistant, device_ids: Iterable[str], known: dict
+    hass: HomeAssistant, device_ids: Iterable[str], known: Container[str]
 ) -> set[str]:
     """Return the BoilerJuice config entries owning `device_ids`."""
     device_registry = dr.async_get(hass)
@@ -90,7 +91,7 @@ def _entry_ids_for_devices(
 
 
 def _entry_ids_for_entities(
-    hass: HomeAssistant, entity_ids: Iterable[str], known: dict
+    hass: HomeAssistant, entity_ids: Iterable[str], known: Container[str]
 ) -> set[str]:
     """Return the BoilerJuice config entries owning `entity_ids`."""
     entity_registry = er.async_get(hass)
@@ -99,13 +100,13 @@ def _entry_ids_for_entities(
         entry = entity_registry.async_get(entity_id)
         if entry is None:
             raise HomeAssistantError(f"Unknown entity_id {entity_id}")
-        if entry.config_entry_id in known:
+        if entry.config_entry_id is not None and entry.config_entry_id in known:
             entry_ids.add(entry.config_entry_id)
     return entry_ids
 
 
 def _entry_ids_for_areas(
-    hass: HomeAssistant, area_ids: Iterable[str], known: dict
+    hass: HomeAssistant, area_ids: Iterable[str], known: Container[str]
 ) -> set[str]:
     """Return the BoilerJuice config entries with devices or entities in `area_ids`."""
     device_registry = dr.async_get(hass)
@@ -117,13 +118,13 @@ def _entry_ids_for_areas(
                 entry_id for entry_id in device.config_entries if entry_id in known
             )
         for entity in er.async_entries_for_area(entity_registry, area_id):
-            if entity.config_entry_id in known:
+            if entity.config_entry_id is not None and entity.config_entry_id in known:
                 entry_ids.add(entity.config_entry_id)
     return entry_ids
 
 
 def _entry_ids_for_labels(
-    hass: HomeAssistant, label_ids: Iterable[str], known: dict
+    hass: HomeAssistant, label_ids: Iterable[str], known: Container[str]
 ) -> set[str]:
     """Return the BoilerJuice config entries carrying `label_ids`."""
     device_registry = dr.async_get(hass)
@@ -135,7 +136,7 @@ def _entry_ids_for_labels(
                 entry_id for entry_id in device.config_entries if entry_id in known
             )
         for entity in er.async_entries_for_label(entity_registry, label_id):
-            if entity.config_entry_id in known:
+            if entity.config_entry_id is not None and entity.config_entry_id in known:
                 entry_ids.add(entity.config_entry_id)
     return entry_ids
 
@@ -398,7 +399,14 @@ async def async_unload_entry(
     if coordinator is not None:
         await coordinator.coordinator.async_close()
 
-    if not hass.config_entries.async_loaded_entries(DOMAIN):
+    # Exclude this entry explicitly: whether it still counts as loaded while
+    # its own unload is in progress varies between Home Assistant versions.
+    others = [
+        other
+        for other in hass.config_entries.async_loaded_entries(DOMAIN)
+        if other.entry_id != entry.entry_id
+    ]
+    if not others:
         async_unload_services(hass)
     return True
 
