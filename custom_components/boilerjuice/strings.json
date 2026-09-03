@@ -41,20 +41,30 @@
   },
   "services": {
     "reset_consumption": {
-      "name": "Reset Consumption",
-      "description": "Reset the consumption counters, history and references to zero, and clear any manual daily consumption override."
+      "name": "Reset consumption",
+      "description": "Reset the consumption counters, history and references to zero, and clear any manual daily consumption override.",
+      "fields": {
+        "entry_id": {
+          "name": "Config entry ID",
+          "description": "Optional. Targets a whole BoilerJuice account rather than one tank."
+        }
+      }
     },
     "set_consumption": {
-      "name": "Set Consumption",
-      "description": "Manually set the consumption values for the oil tank.",
+      "name": "Set consumption",
+      "description": "Manually set the consumption values for a tank.",
       "fields": {
         "liters": {
-          "name": "Total Consumption",
-          "description": "The total consumption in liters."
+          "name": "Total consumption",
+          "description": "The total consumption in litres."
         },
         "daily": {
-          "name": "Daily Consumption",
+          "name": "Daily consumption",
           "description": "Optional daily consumption override in litres per day. It replaces the measured rate and persists across updates and restarts until you run \"Reset consumption\"."
+        },
+        "entry_id": {
+          "name": "Config entry ID",
+          "description": "Optional. Targets a whole BoilerJuice account rather than one tank."
         }
       }
     }

@@ -317,3 +317,39 @@ async def test_set_consumption_skips_an_account_with_no_reading_yet(
     await hass.async_block_till_done()
 
     assert tracker_of(coordinator).total_litres == 0.0
+
+
+def test_the_action_definitions_and_translations_agree() -> None:
+    """A field with no translation shows up untranslated in the UI."""
+    import json
+    import pathlib
+
+    import yaml
+
+    root = pathlib.Path("custom_components/boilerjuice")
+    actions = yaml.safe_load((root / "services.yaml").read_text(encoding="utf-8"))
+
+    for name in ("strings.json", "translations/en.json"):
+        translated = json.loads((root / name).read_text(encoding="utf-8"))["services"]
+        assert set(translated) == set(actions), name
+        for action, definition in actions.items():
+            assert set(translated[action]["fields"]) == set(
+                definition.get("fields", {})
+            ), f"{name}: {action}"
+
+
+def test_both_actions_accept_a_boilerjuice_target() -> None:
+    """Without a target block the UI offers no way to pick a tank."""
+    import pathlib
+
+    import yaml
+
+    actions = yaml.safe_load(
+        pathlib.Path("custom_components/boilerjuice/services.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    for name, definition in actions.items():
+        assert definition["target"]["device"]["integration"] == DOMAIN, name
+        assert definition["target"]["entity"]["integration"] == DOMAIN, name
