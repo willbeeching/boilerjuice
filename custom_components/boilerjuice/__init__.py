@@ -9,11 +9,7 @@ import voluptuous as vol
 from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, Platform
 from homeassistant.core import HomeAssistant, ServiceCall, callback
-from homeassistant.exceptions import (
-    ConfigEntryAuthFailed,
-    ConfigEntryNotReady,
-    HomeAssistantError,
-)
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -300,14 +296,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
 
-    # Fetch initial data
+    # Raises ConfigEntryNotReady (or ConfigEntryAuthFailed) by itself, so
+    # there is nothing to re-check afterwards.
     await coordinator.async_config_entry_first_refresh()
-
-    if not coordinator.last_update_success:
-        _LOGGER.error("Failed to setup BoilerJuice: %s", coordinator.last_exception)
-        if isinstance(coordinator.last_exception, ConfigEntryAuthFailed):
-            raise ConfigEntryAuthFailed
-        raise ConfigEntryNotReady
 
     # Register device
     device_registry = dr.async_get(hass)

@@ -2,24 +2,18 @@
 
 from __future__ import annotations
 
-import pathlib
 from typing import Callable
 
 import pytest
 
+from .helpers import load_fixture
+
 pytest_plugins = "pytest_homeassistant_custom_component"
-
-FIXTURE_DIR = pathlib.Path(__file__).parent / "fixtures"
-
-
-def load_fixture(name: str) -> str:
-    """Return the contents of an HTML fixture."""
-    return (FIXTURE_DIR / name).read_text(encoding="utf-8")
 
 
 @pytest.fixture
 def html() -> Callable[[str], str]:
-    """Return the fixture loader."""
+    """Return the HTML fixture loader."""
     return load_fixture
 
 

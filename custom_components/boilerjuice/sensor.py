@@ -394,8 +394,10 @@ class BoilerJuiceKwhPerLitreSensor(BoilerJuiceSensor):
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
-    def native_value(self) -> float:
+    def native_value(self) -> float | None:
         """Return the kWh per litre conversion factor."""
+        if not self._coordinator.data:
+            return None
         return self._coordinator.data.get("kwh_per_litre", DEFAULT_KWH_PER_LITRE)
 
 

@@ -19,7 +19,7 @@ from custom_components.boilerjuice.coordinator import (
     validate_tank_id,
 )
 
-from .conftest import load_fixture
+from .helpers import load_fixture
 
 
 def test_parses_the_current_page_layout() -> None:
@@ -153,3 +153,83 @@ def test_out_of_range_capacities_are_dropped(capacity: str) -> None:
 
     assert "capacity_litres" not in data
     assert data["total_level_percentage"] == 50
+
+
+def test_a_tank_with_no_model_json_still_parses() -> None:
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        '<input id="tankModelInput" value="42">'
+    )
+    data = parse_tank_page(html, "123456")
+
+    assert data["model_id"] == "42"
+    assert "model" not in data
+
+
+def test_malformed_model_json_does_not_fail_the_reading() -> None:
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        '<input id="tankModelInput" value="42">'
+        "<script>var jsonData = [{oops;</script>"
+    )
+    data = parse_tank_page(html, "123456")
+
+    assert data["total_level_percentage"] == 50
+    assert "model" not in data
+
+
+def test_an_unclosed_model_json_array_does_not_fail_the_reading() -> None:
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        '<input id="tankModelInput" value="42">'
+        '<script>var jsonData = [{"id": 42, "tank": {"Brand": "Titan"}}</script>'
+    )
+    data = parse_tank_page(html, "123456")
+
+    assert "model" not in data
+
+
+def test_a_model_id_absent_from_the_json_leaves_the_model_unset() -> None:
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        '<input id="tankModelInput" value="99">'
+        '<script>var jsonData = [{"id": 42, "tank": {"Brand": "Titan",'
+        ' "Description": "ES2500"}}];</script>'
+    )
+    data = parse_tank_page(html, "123456")
+
+    assert data["model_id"] == "99"
+    assert "model" not in data
+
+
+def test_nested_arrays_in_the_model_json_are_walked_correctly() -> None:
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        '<input id="tankModelInput" value="42">'
+        '<script>var jsonData = [{"id": 41, "sizes": [1, 2, 3]},'
+        ' {"id": 42, "tank": {"Brand": "Titan", "Description": "ES2500"}}];</script>'
+    )
+    data = parse_tank_page(html, "123456")
+
+    assert data["manufacturer"] == "Titan"
+    assert data["model"] == "ES2500"
+
+
+def test_a_volume_mentioned_without_the_oil_keyword_is_not_read() -> None:
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        "<p>Your last delivery was 900 litres.</p>"
+    )
+    data = parse_tank_page(html, "123456")
+
+    assert "usable_volume_litres" not in data
+
+
+def test_an_out_of_range_height_is_dropped() -> None:
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        '<input id="internal_height" value="99999">'
+    )
+    data = parse_tank_page(html, "123456")
+
+    assert "height_cm" not in data

@@ -19,50 +19,9 @@ from custom_components.boilerjuice import (
     SERVICE_RESET_CONSUMPTION,
     SERVICE_SET_CONSUMPTION,
 )
-from custom_components.boilerjuice.const import (
-    CONF_EMAIL,
-    CONF_PASSWORD,
-    CONF_TANK_ID,
-    DOMAIN,
-    LOGIN_URL,
-    PRICE_URL,
-    TANKS_URL,
-)
+from custom_components.boilerjuice.const import DOMAIN
 
-from .conftest import load_fixture
-from .test_coordinator import PRICE_PAGE, SIGNED_IN_PAGE, tank_page
-
-
-async def add_account(
-    hass: HomeAssistant,
-    aioclient_mock: AiohttpClientMocker,
-    *,
-    email: str,
-    tank_id: str,
-    litres: int,
-) -> MockConfigEntry:
-    """Set up one fully-loaded BoilerJuice account."""
-    aioclient_mock.get(LOGIN_URL, text=load_fixture("login.html"))
-    aioclient_mock.post(LOGIN_URL, text=SIGNED_IN_PAGE)
-    aioclient_mock.get(PRICE_URL, text=PRICE_PAGE)
-    aioclient_mock.get(
-        f"{TANKS_URL}/{tank_id}/edit", text=tank_page(percentage=80, litres=litres)
-    )
-
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title=f"Tank {tank_id}",
-        data={
-            CONF_EMAIL: email,
-            CONF_PASSWORD: "hunter2",
-            CONF_TANK_ID: tank_id,
-        },
-        unique_id=email,
-    )
-    entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-    return entry
+from .helpers import setup_account
 
 
 @pytest.fixture
@@ -70,10 +29,10 @@ async def two_accounts(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> tuple[MockConfigEntry, MockConfigEntry]:
     """Two configured accounts, each with recorded consumption."""
-    first = await add_account(
+    first = await setup_account(
         hass, aioclient_mock, email="one@example.com", tank_id="111111", litres=2000
     )
-    second = await add_account(
+    second = await setup_account(
         hass, aioclient_mock, email="two@example.com", tank_id="222222", litres=1500
     )
 
@@ -183,7 +142,7 @@ async def test_an_unknown_entity_target_is_refused(
 async def test_set_consumption_uses_the_configured_energy_content(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
-    entry = await add_account(
+    entry = await setup_account(
         hass, aioclient_mock, email="one@example.com", tank_id="111111", litres=2000
     )
     coordinator = hass.data[DOMAIN][entry.entry_id]
@@ -199,3 +158,157 @@ async def test_set_consumption_uses_the_configured_energy_content(
 
     assert coordinator.total_consumption_usable_kwh == pytest.approx(960.0)
     assert coordinator.data["total_consumption_usable_kwh"] == pytest.approx(960.0)
+
+
+async def test_a_label_target_reaches_only_that_account(
+    hass: HomeAssistant, two_accounts
+) -> None:
+    from homeassistant.helpers import label_registry as lr
+
+    first, second = two_accounts
+    label = lr.async_get(hass).async_create("Oil")
+    device_registry = dr.async_get(hass)
+    device = device_registry.async_get_device(identifiers={(DOMAIN, "111111")})
+    device_registry.async_update_device(device.id, labels={label.label_id})
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_RESET_CONSUMPTION,
+        {"label_id": label.label_id},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert totals(hass, first, second) == [0.0, 90.0]
+
+
+async def test_an_area_target_reaches_only_that_account(
+    hass: HomeAssistant, two_accounts
+) -> None:
+    from homeassistant.helpers import area_registry as ar
+
+    first, second = two_accounts
+    area = ar.async_get(hass).async_create("Utility")
+    device_registry = dr.async_get(hass)
+    device = device_registry.async_get_device(identifiers={(DOMAIN, "222222")})
+    device_registry.async_update_device(device.id, area_id=area.id)
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_RESET_CONSUMPTION,
+        {"area_id": area.id},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert totals(hass, first, second) == [40.0, 0.0]
+
+
+async def test_a_list_of_entry_ids_is_accepted(
+    hass: HomeAssistant, two_accounts
+) -> None:
+    first, second = two_accounts
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_RESET_CONSUMPTION,
+        {"entry_id": [first.entry_id, second.entry_id]},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert totals(hass, first, second) == [0.0, 0.0]
+
+
+async def test_an_unknown_entry_id_is_refused(
+    hass: HomeAssistant, two_accounts
+) -> None:
+    first, second = two_accounts
+
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_RESET_CONSUMPTION,
+            {"entry_id": "not-a-real-entry"},
+            blocking=True,
+        )
+
+    assert totals(hass, first, second) == [40.0, 90.0]
+
+
+async def test_an_unknown_device_id_is_refused(
+    hass: HomeAssistant, two_accounts
+) -> None:
+    first, second = two_accounts
+
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_RESET_CONSUMPTION,
+            {"device_id": "not-a-real-device"},
+            blocking=True,
+        )
+
+    assert totals(hass, first, second) == [40.0, 90.0]
+
+
+async def test_a_single_account_needs_no_target(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    entry = await setup_account(hass, aioclient_mock)
+    hass.data[DOMAIN][entry.entry_id]._total_consumption_usable_liters = 40.0
+
+    await hass.services.async_call(DOMAIN, SERVICE_RESET_CONSUMPTION, {}, blocking=True)
+    await hass.async_block_till_done()
+
+    assert totals(hass, entry) == [0.0]
+
+
+async def test_calling_a_service_with_nothing_loaded_is_refused(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    await setup_account(hass, aioclient_mock)
+    # Keep the services registered while emptying the coordinator registry,
+    # which is what a call racing an unload would see.
+    hass.data[DOMAIN] = {}
+
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(
+            DOMAIN, SERVICE_RESET_CONSUMPTION, {}, blocking=True
+        )
+
+
+async def test_set_consumption_also_sets_the_daily_rate(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    entry = await setup_account(hass, aioclient_mock)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_SET_CONSUMPTION,
+        {"liters": 100.0, "daily": 7.5, "entry_id": entry.entry_id},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert coordinator.daily_consumption_usable_liters == 7.5
+    assert coordinator.data["daily_consumption_usable_liters"] == 7.5
+
+
+async def test_set_consumption_skips_an_account_with_no_reading_yet(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    entry = await setup_account(hass, aioclient_mock)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator.data = None
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_SET_CONSUMPTION,
+        {"liters": 100.0, "entry_id": entry.entry_id},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert coordinator.total_consumption_usable_liters == 0.0

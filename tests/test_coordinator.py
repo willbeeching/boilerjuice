@@ -7,7 +7,6 @@ from the previous good reading to that zero was booked as real consumption.
 
 from __future__ import annotations
 
-
 import pytest
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -20,7 +19,6 @@ from custom_components.boilerjuice.const import (
     CONF_TANK_ID,
     DOMAIN,
     LOGIN_URL,
-    PRICE_URL,
     TANKS_URL,
 )
 from custom_components.boilerjuice.coordinator import (
@@ -28,61 +26,20 @@ from custom_components.boilerjuice.coordinator import (
     BoilerJuiceDataUpdateCoordinator,
 )
 
-from .conftest import load_fixture
-
-TANK_ID = "123456"
-TANK_URL = f"{TANKS_URL}/{TANK_ID}/edit"
-SIGNED_IN_PAGE = "<html><body><h1>Your account</h1></body></html>"
-PRICE_PAGE = "<html><body><p>Today: 62.45 pence per litre</p></body></html>"
-
-
-def tank_page(percentage: float | None = None, litres: int | None = None) -> str:
-    """Build a tank page carrying the given level and/or volume."""
-    parts = ['<html><body><input id="tank_size" value="2500">']
-    if percentage is not None:
-        parts.append(
-            f'<div id="usable-oil"><div class="oil-level" '
-            f'data-percentage="{percentage}"></div></div>'
-        )
-    if litres is not None:
-        parts.append(f"<p>{litres} litres of oil</p>")
-    parts.append("</body></html>")
-    return "".join(parts)
-
-
-def mock_site(
-    aioclient_mock: AiohttpClientMocker,
-    *,
-    tank_html: str,
-    price_html: str | None = PRICE_PAGE,
-    login_html: str = SIGNED_IN_PAGE,
-) -> None:
-    """Register a full, successful BoilerJuice round trip."""
-    aioclient_mock.clear_requests()
-    aioclient_mock.get(LOGIN_URL, text=load_fixture("login.html"))
-    aioclient_mock.post(LOGIN_URL, text=login_html)
-    aioclient_mock.get(TANKS_URL, text=load_fixture("tanks_list.html"))
-    aioclient_mock.get(TANK_URL, text=tank_html)
-    if price_html is None:
-        aioclient_mock.get(PRICE_URL, status=503, text="")
-    else:
-        aioclient_mock.get(PRICE_URL, text=price_html)
+from .helpers import (
+    SIGNED_IN_PAGE,
+    TANK_ID,
+    load_fixture,
+    make_entry,
+    mock_site,
+    tank_page,
+)
 
 
 @pytest.fixture
 def entry(hass: HomeAssistant) -> MockConfigEntry:
     """Return a config entry pinned to a known tank."""
-    config_entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={
-            CONF_EMAIL: "someone@example.com",
-            CONF_PASSWORD: "hunter2",
-            CONF_TANK_ID: TANK_ID,
-        },
-        unique_id="someone@example.com",
-    )
-    config_entry.add_to_hass(hass)
-    return config_entry
+    return make_entry(hass)
 
 
 @pytest.fixture

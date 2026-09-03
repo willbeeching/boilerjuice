@@ -278,8 +278,10 @@ def parse_tank_page(html: str, tank_id: str) -> Dict[str, Any]:
             continue
         volume = _volume_litres(match.group(1))
         if volume is not None:
-            data["current_volume_litres"] = volume
-            data["usable_volume_litres"] = volume
+            # The page only ever states whole litres, and the sensor state
+            # should read "1562", not "1562.0".
+            data["current_volume_litres"] = int(volume)
+            data["usable_volume_litres"] = int(volume)
             break
 
     tank_name_input = soup.find("input", {"id": "tank_user_tanks_attributes_0_name"})
@@ -1056,7 +1058,11 @@ class BoilerJuiceDataUpdateCoordinator(DataUpdateCoordinator):
                             _LOGGER.debug("Ignoring implausible oil price %s", price)
                 else:
                     _LOGGER.debug("Oil price page returned HTTP %s", response.status)
-        except (aiohttp.ClientError, TimeoutError) as err:
+        except Exception as err:  # noqa: BLE001 - the price is strictly optional
+            # Deliberately broad: the price comes from a separate public page
+            # and is a nice-to-have. Nothing it can raise - a transport error,
+            # a decoding error, a redirect loop - is worth failing the tank
+            # reading for, and the last good price is kept below.
             _LOGGER.debug("Could not refresh the oil price: %s", err)
 
         if self._last_price_pence is not None:
