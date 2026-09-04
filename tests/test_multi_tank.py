@@ -18,7 +18,10 @@ from custom_components.boilerjuice.const import (
     TANKS_URL,
 )
 from custom_components.boilerjuice.coordinator import MISSING_LISTINGS_BEFORE_REMOVAL
-from custom_components.boilerjuice.storage import StorageWriteFailed
+from custom_components.boilerjuice.storage import (
+    StorageWriteFailed,
+    StorageWriteRefused,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
@@ -1501,8 +1504,53 @@ async def test_a_save_already_in_flight_when_the_account_goes_is_taken_back(
     assert key not in hass_storage
 
     gate.set()
-    with pytest.raises(StorageWriteFailed):
+    with pytest.raises(StorageWriteRefused):
         await asyncio.wait_for(action, timeout=5)
     await asyncio.sleep(0)
 
     assert key not in hass_storage
+
+
+@pytest.mark.parametrize(
+    ("failure", "keeps_going"),
+    [
+        pytest.param(
+            StorageWriteFailed("boilerjuice.x"), True, id="the-disk-is-unwell"
+        ),
+        pytest.param(
+            StorageWriteRefused("boilerjuice.x"), False, id="the-account-went"
+        ),
+    ],
+)
+async def test_a_refused_write_stops_the_poll_and_a_failed_one_does_not(
+    hass: HomeAssistant,
+    account: MockConfigEntry,
+    aioclient_mock: AiohttpClientMocker,
+    failure: Exception,
+    keeps_going: bool,
+) -> None:
+    """The two call for opposite responses, and used to be the same exception.
+
+    A failed write leaves good readings worth publishing, so the poll carries
+    on and the entities stay up. A refused write means the account has gone
+    and the write has been taken back, so carrying on would register devices
+    and publish readings for an account that is not there.
+    """
+    from unittest.mock import patch
+
+    coordinator = coordinator_of(account)
+    mock_account(aioclient_mock, TWO_TANKS)
+
+    registered: list[object] = []
+
+    def watch(published: dict[str, dict[str, object]]) -> None:
+        registered.append(published)
+
+    coordinator._register_devices = watch
+
+    with patch.object(type(coordinator), "_async_persist", side_effect=failure):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    assert coordinator.last_update_success is keeps_going
+    assert bool(registered) is keeps_going

@@ -48,6 +48,7 @@ from .storage import (
     ConsumptionState,
     ConsumptionStore,
     StorageWriteFailed,
+    StorageWriteRefused,
 )
 from .tank import TankTracker
 
@@ -358,7 +359,7 @@ class BoilerJuiceDataUpdateCoordinator(
         answer whichever order the two happen in.
         """
         if self._closing:
-            raise StorageWriteFailed(self._storage_key)
+            raise StorageWriteRefused(self._storage_key)
         if self._store is None or not self._loaded:
             return
 
@@ -366,7 +367,7 @@ class BoilerJuiceDataUpdateCoordinator(
 
         if self._closing:
             await self._store.async_remove()
-            raise StorageWriteFailed(self._storage_key)
+            raise StorageWriteRefused(self._storage_key)
 
     # ------------------------------------------------------------------
     # Public operations
@@ -983,6 +984,12 @@ class BoilerJuiceDataUpdateCoordinator(
 
             try:
                 await self._async_persist()
+            except StorageWriteRefused as err:
+                # Not the same thing as a failed write at all: the account
+                # went while this poll was writing, and the write has been
+                # taken back. Carrying on from here would register devices
+                # and publish readings for an account that has gone.
+                raise UpdateFailed("This BoilerJuice account is unloading") from err
             except StorageWriteFailed:
                 # The readings are good; only the record of them failed. The
                 # entities stay up, because taking them down would not put

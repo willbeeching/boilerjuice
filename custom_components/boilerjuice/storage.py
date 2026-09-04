@@ -68,6 +68,16 @@ class StorageWriteFailed(Exception):
     """The document did not reach the disk."""
 
 
+class StorageWriteRefused(Exception):
+    """The account closed, so nothing was written and nothing was kept.
+
+    A sibling of StorageWriteFailed rather than a subclass, because the two
+    call for opposite responses: a write that failed leaves good readings
+    worth publishing, and a write that was refused means the account is going
+    and there is nothing left to publish to.
+    """
+
+
 @dataclass(slots=True)
 class ConsumptionState:
     """Everything about one tank that has to outlive a restart.
