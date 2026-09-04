@@ -544,25 +544,29 @@ class BoilerJuiceDataUpdateCoordinator(
         """Return the entry the device registry already records as owning a tank.
 
         Asked per entry because since 2026.9 the lookup is scoped to one, and
-        the answer is then read off the device rather than from which entry
-        we happened to ask about, because on the supported floor identifiers
-        are still global and the lookup ignores the scope.
+        the answer is read off the device rather than from which entry we
+        happened to ask about, because on the supported floor identifiers are
+        still global and the lookup ignores the scope.
+
+        Every owner of every matching device is collected, and the smallest
+        config entry id wins. The answer has to be the same whoever asks: a
+        device carried over from an older Home Assistant can name two
+        overlapping entries, and preferring ourselves then meant both
+        coordinators picked themselves and the first to run took the tank.
+        That is the startup-order problem again, on exactly the installations
+        that need the repair.
         """
-        entries = self.hass.config_entries.async_entries(DOMAIN)
+        entries = sorted(
+            self.hass.config_entries.async_entries(DOMAIN),
+            key=lambda entry: entry.entry_id,
+        )
         known = {entry.entry_id for entry in entries}
+        owners: set[str] = set()
         for entry in entries:
             device = async_tank_device(self.hass, tank_id, entry.entry_id)
-            if device is None:
-                continue
-            owners = device_config_entry_ids(device) & known
-            if not owners:
-                continue
-            # Ourselves first, so an ordinary restart keeps what it had even
-            # if the device somehow names more than one entry.
-            if self._entry_id in owners:
-                return self._entry_id
-            return sorted(owners)[0]
-        return None
+            if device is not None:
+                owners |= device_config_entry_ids(device) & known
+        return min(owners) if owners else None
 
     def _refresh_claim_issue(self, taken: dict[str, str]) -> None:
         """Raise or clear the "another account already has this tank" repair."""

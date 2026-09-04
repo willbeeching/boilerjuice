@@ -233,6 +233,119 @@ async def test_a_restart_resumes_from_the_stored_totals(
 # --- migration from the shared v1 document --------------------------------
 
 
+async def test_a_marker_naming_another_account_never_touches_shared_storage(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    """The marker names a key that gets deleted out of shared storage.
+
+    A document claiming to have migrated from somebody else's entry id
+    otherwise validated cleanly, and loading it deleted their only copy.
+    """
+    from custom_components.boilerjuice.storage import LEGACY_STORAGE_KEY
+
+    mine = make_entry(hass)
+    theirs = make_entry(hass, email="two@example.com", tank_id="222222")
+
+    store = ConsumptionStore(hass, mine.entry_id, None)
+    hass_storage[store.key] = {
+        "version": STORAGE_VERSION,
+        "data": {
+            "tanks": {},
+            "missing": {},
+            "retired": [],
+            "unassigned": None,
+            "legacy_slot": theirs.entry_id,
+            "legacy_digest": "0" * 64,
+        },
+    }
+    hass_storage[LEGACY_STORAGE_KEY] = {
+        "version": 1,
+        "data": {theirs.entry_id: {"total_consumption_liters": 90.0}},
+    }
+
+    account, reason = await store.async_load()
+
+    assert reason is not None, "the impossible marker is reported"
+    assert account.legacy_slot is None
+    assert hass_storage[LEGACY_STORAGE_KEY]["data"][theirs.entry_id] == {
+        "total_consumption_liters": 90.0
+    }
+
+
+@pytest.mark.parametrize(
+    ("slot", "digest"),
+    [
+        pytest.param("default", "0" * 64, id="default-without-a-pin"),
+        pytest.param("999999", "0" * 64, id="somebody-elses-tank"),
+        pytest.param("../../etc/passwd", "0" * 64, id="not-a-slot-at-all"),
+        pytest.param(None, "0" * 64, id="digest-with-no-slot"),
+    ],
+)
+async def test_an_impossible_migration_marker_is_refused(
+    hass: HomeAssistant, hass_storage, slot: str | None, digest: str
+) -> None:
+    """Only the three keys _slot_in could have chosen are accepted."""
+    entry = make_entry(hass, tank_id=None)
+    store = ConsumptionStore(hass, entry.entry_id, None)
+    hass_storage[store.key] = {
+        "version": STORAGE_VERSION,
+        "data": {
+            "tanks": {},
+            "missing": {},
+            "retired": [],
+            "unassigned": None,
+            "legacy_slot": slot,
+            "legacy_digest": digest,
+        },
+    }
+
+    _, reason = await store.async_load()
+
+    assert reason is not None
+
+
+async def test_a_slot_whose_contents_changed_is_left_alone(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    """The shared bucket belongs to nobody, so its name is not proof it is ours.
+
+    A cleanup left over from our own migration must not delete a bucket that
+    now holds somebody else's history, and the only way to tell them apart is
+    what the slot actually contains.
+    """
+    from custom_components.boilerjuice.storage import LEGACY_STORAGE_KEY
+
+    entry = make_entry(hass, tank_id="123456")
+    store = ConsumptionStore(hass, entry.entry_id, "123456")
+
+    hass_storage[LEGACY_STORAGE_KEY] = {
+        "version": 1,
+        "data": {"default": {"total_consumption_liters": 330.0}},
+    }
+    account, reason = await store.async_load()
+    assert reason is None
+    assert account.tanks["123456"].total_litres == 330.0
+
+    # Put the marker back, as an interrupted cleanup would leave it, but let
+    # the bucket now hold a different account's history.
+    saved = hass_storage[store.key]["data"]
+    saved["legacy_slot"] = "default"
+    saved["legacy_digest"] = "0" * 64
+    hass_storage[LEGACY_STORAGE_KEY] = {
+        "version": 1,
+        "data": {"default": {"total_consumption_liters": 90.0}},
+    }
+
+    _, reason = await store.async_load()
+
+    assert reason is None
+    assert hass_storage[LEGACY_STORAGE_KEY]["data"]["default"] == {
+        "total_consumption_liters": 90.0
+    }
+    # The marker is spent either way, so it cannot be retried forever.
+    assert hass_storage[store.key]["data"]["legacy_slot"] is None
+
+
 async def test_an_unreadable_destination_recovers_from_the_legacy_slot(
     hass: HomeAssistant, hass_storage
 ) -> None:

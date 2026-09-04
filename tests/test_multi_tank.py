@@ -1249,3 +1249,50 @@ async def test_a_restart_does_not_move_tanks_to_whichever_account_starts_first(
         device = tank_device(hass, account, tank_id)
         assert device is not None
         assert device_config_entry_ids(device) == {account.entry_id}
+
+
+async def test_a_device_naming_two_entries_has_one_owner_whoever_asks(
+    hass: HomeAssistant, account: MockConfigEntry, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """A device carried over from an older Home Assistant can name two entries.
+
+    Preferring ourselves then meant both coordinators picked themselves and
+    whichever ran first took the tank: the startup-order problem again, on
+    exactly the installations that need the repair. The answer has to be the
+    same whoever asks.
+
+    Built as a stub rather than in the registry, because Home Assistant 2026.9
+    refuses to create a device with two config entries at all. Only the older
+    installations this repairs can hold one.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    first = coordinator_of(account)
+
+    other = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_EMAIL: "someone-else@example.com", CONF_PASSWORD: "hunter2"},
+        unique_id="someone-else@example.com",
+    )
+    other.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(other.entry_id)
+    await hass.async_block_till_done()
+    second = coordinator_of(other)
+
+    # config_entry_id is None, as it is on the supported floor, so ownership
+    # is read from the plural attribute.
+    shared_device = SimpleNamespace(
+        id="shared",
+        config_entry_id=None,
+        config_entries={account.entry_id, other.entry_id},
+    )
+
+    with patch(
+        "custom_components.boilerjuice.coordinator.async_tank_device",
+        return_value=shared_device,
+    ):
+        answers = {first._recorded_owner(FIRST), second._recorded_owner(FIRST)}
+
+    assert len(answers) == 1, f"the owner depends on who asks: {answers}"
+    assert answers == {min(account.entry_id, other.entry_id)}

@@ -14,8 +14,11 @@ to poison the running totals.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import math
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -45,6 +48,16 @@ MAX_VOLUME_LITRES = 100_000
 MAX_HISTORY_ROWS = 1_000
 
 DatedHistory = list[tuple[datetime, float]]
+
+
+_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def slot_digest(payload: Any) -> str:
+    """Return a fingerprint of one v1 slot's contents."""
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
 
 
 class InvalidStoredData(Exception):
@@ -295,6 +308,10 @@ class AccountState:
     # second look could match one that belongs to an entry which has not
     # migrated yet, and deleting it would take their history with it.
     legacy_slot: str | None = None
+    # A fingerprint of what that slot held when we copied it. The slot name
+    # alone is not proof of ownership - "default" belongs to nobody - so the
+    # payload has to still be the one we took before it is deleted.
+    legacy_digest: str | None = None
 
 
 def account_from_document(document: Any) -> AccountState:
@@ -322,6 +339,10 @@ def account_from_document(document: Any) -> AccountState:
     if legacy_slot is not None and not isinstance(legacy_slot, str):
         raise InvalidStoredData("legacy_slot must be a string")
 
+    legacy_digest = document.get("legacy_digest")
+    if legacy_digest is not None and not _DIGEST_RE.fullmatch(str(legacy_digest)):
+        raise InvalidStoredData("legacy_digest must be a sha256 hex digest")
+
     return AccountState(
         tanks={tank_id: state_from_document(sub) for tank_id, sub in tanks.items()},
         missing={
@@ -331,6 +352,7 @@ def account_from_document(document: Any) -> AccountState:
         retired=set(retired),
         unassigned=None if unassigned is None else state_from_document(unassigned),
         legacy_slot=legacy_slot,
+        legacy_digest=legacy_digest,
     )
 
 
@@ -349,6 +371,7 @@ def document_from_account(account: AccountState) -> dict[str, Any]:
             else document_from_state(account.unassigned)
         ),
         "legacy_slot": account.legacy_slot,
+        "legacy_digest": account.legacy_digest,
     }
 
 
@@ -385,6 +408,7 @@ class ConsumptionStore:
         if document is not None:
             try:
                 account = account_from_document(document)
+                self._check_migration_marker(account)
             except InvalidStoredData as err:
                 _LOGGER.warning(
                     "Discarding unusable stored BoilerJuice consumption data "
@@ -475,15 +499,17 @@ class ConsumptionStore:
             # and the source already deleted, so the account's whole history
             # was gone. Raising here leaves the shared document intact and
             # the next start tries again.
-            # Saved with the slot recorded, so a cleanup that fails can be
-            # finished later against the slot we actually took, and not
-            # against whatever a fresh search happens to match.
+            # Saved with the slot and its fingerprint recorded, so a cleanup
+            # that fails can be finished later against the slot we actually
+            # took, and not against whatever a fresh search happens to match.
             account.legacy_slot = slot
+            account.legacy_digest = slot_digest(shared[slot])
             await self.async_save(account)
 
             await self._async_drop_slot(shared, slot)
 
             account.legacy_slot = None
+            account.legacy_digest = None
             await self.async_save(account)
 
             _LOGGER.info(
@@ -493,13 +519,49 @@ class ConsumptionStore:
 
             return account, reason
 
+    def _migratable_slots(self) -> set[str]:
+        """Return the keys this store could legitimately have migrated from.
+
+        The same three `_slot_in` can choose, and nothing else. A document is
+        only ever read back from disk, where it can be edited or corrupted,
+        so its own account of where it came from is not taken on trust.
+        """
+        slots = {self._entry_id}
+        if self._tank_id:
+            slots |= {self._tank_id, "default"}
+        return slots
+
+    def _check_migration_marker(self, account: AccountState) -> None:
+        """Refuse a migration marker this store could not have written.
+
+        The marker names a key that will be deleted out of storage shared
+        with every other account. A document claiming to have migrated from
+        somebody else's entry id otherwise validated cleanly, and loading it
+        deleted their only copy.
+        """
+        if account.legacy_slot is None:
+            if account.legacy_digest is not None:
+                raise InvalidStoredData("a migration digest with no slot")
+            return
+
+        if account.legacy_digest is None:
+            raise InvalidStoredData("a migration slot with no digest")
+
+        if account.legacy_slot not in self._migratable_slots():
+            raise InvalidStoredData(
+                f"migration slot {account.legacy_slot!r} is not one this "
+                "account could have come from"
+            )
+
     async def _async_finish_migration(self, account: AccountState) -> None:
         """Drop the slot this account was migrated from, if one is still there.
 
         The slot is the one the migration recorded, never one worked out
         again from scratch: `_slot_in` can match the shared "default" bucket,
         which belongs to nobody in particular, so a second look could delete
-        history belonging to an entry that has not migrated yet.
+        history belonging to an entry that has not migrated yet. The name is
+        not enough on its own for the same reason, so what the slot holds now
+        has to still fingerprint as what we copied.
 
         A no-op in the ordinary case, where the shared document is long gone
         and the account has no slot recorded.
@@ -510,10 +572,20 @@ class ConsumptionStore:
         lock = self._hass.data.setdefault(LEGACY_MIGRATION_LOCK, asyncio.Lock())
         async with lock:
             shared = await self._legacy.async_load()
-            if shared and account.legacy_slot in shared:
-                await self._async_drop_slot(shared, account.legacy_slot)
+            payload = (shared or {}).get(account.legacy_slot)
+            if shared is not None and payload is not None:
+                if slot_digest(payload) == account.legacy_digest:
+                    await self._async_drop_slot(shared, account.legacy_slot)
+                else:
+                    _LOGGER.warning(
+                        "Leaving the shared BoilerJuice storage slot %r where it "
+                        "is: it no longer holds what this account was migrated "
+                        "from, so it belongs to another entry now",
+                        account.legacy_slot,
+                    )
 
         account.legacy_slot = None
+        account.legacy_digest = None
         await self.async_save(account)
 
     async def _async_drop_slot(self, shared: dict[str, Any], slot: str) -> None:
