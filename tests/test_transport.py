@@ -8,6 +8,8 @@ from custom_components.boilerjuice.const import (
     CONF_KWH_PER_LITRE,
     DEFAULT_KWH_PER_LITRE,
     LOGIN_URL,
+    MAX_KWH_PER_LITRE,
+    MIN_KWH_PER_LITRE,
     PRICE_URL,
     TANKS_URL,
 )
@@ -204,7 +206,22 @@ async def test_an_unexpected_error_becomes_an_update_failure(
     assert isinstance(coordinator.last_exception, UpdateFailed)
 
 
-@pytest.mark.parametrize("bad", [0, -1, "not a number", float("nan"), None])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param(0, id="zero"),
+        pytest.param(-1, id="negative"),
+        pytest.param("not a number", id="not-numeric"),
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(None, id="missing"),
+        # A version-one entry was written before the form had any bounds, so
+        # it can hold a figure the UI would now refuse.
+        pytest.param(101, id="above-the-form-ceiling"),
+        pytest.param(0.05, id="below-the-form-floor"),
+        pytest.param(1e12, id="enormous"),
+        pytest.param(float("inf"), id="infinite"),
+    ],
+)
 async def test_a_bad_energy_content_falls_back_to_the_default(
     hass: HomeAssistant, bad: object
 ) -> None:
@@ -215,6 +232,43 @@ async def test_a_bad_energy_content_falls_back_to_the_default(
         assert made.kwh_per_litre == DEFAULT_KWH_PER_LITRE
     finally:
         await made.async_close()
+
+
+@pytest.mark.parametrize("edge", [MIN_KWH_PER_LITRE, MAX_KWH_PER_LITRE, 10.7])
+async def test_an_energy_content_inside_the_bounds_is_kept(
+    hass: HomeAssistant, edge: float
+) -> None:
+    """The bounds are inclusive; gas oil at 10.7 is an ordinary value."""
+    entry = make_entry(hass, **{CONF_KWH_PER_LITRE: edge})
+    made = BoilerJuiceDataUpdateCoordinator(hass, entry)
+
+    try:
+        assert made.kwh_per_litre == edge
+    finally:
+        await made.async_close()
+
+
+def test_the_energy_ceiling_cannot_produce_an_unstorable_total() -> None:
+    """The bound exists to keep the stored kWh total readable.
+
+    The largest litre figure storage accepts, multiplied by the largest
+    energy content the coordinator will use, has to still be a number the
+    reader takes back. Otherwise a legal action writes a document that the
+    next start discards, and the account's history goes with it.
+    """
+    from custom_components.boilerjuice.storage import (
+        MAX_TOTAL_LITRES,
+        state_from_document,
+    )
+
+    document = {
+        "total_litres": MAX_TOTAL_LITRES,
+        "total_kwh": MAX_TOTAL_LITRES * MAX_KWH_PER_LITRE,
+    }
+
+    state = state_from_document(document)
+
+    assert state.total_kwh == MAX_TOTAL_LITRES * MAX_KWH_PER_LITRE
 
 
 async def test_an_unreadable_stored_timestamp_is_refused(

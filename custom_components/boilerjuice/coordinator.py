@@ -35,6 +35,8 @@ from .const import (
     CONF_TANKS,
     DEFAULT_KWH_PER_LITRE,
     DOMAIN,
+    MAX_KWH_PER_LITRE,
+    MIN_KWH_PER_LITRE,
 )
 from .errors import BoilerJuiceAuthError, BoilerJuiceParseError
 from .helpers import async_tank_device
@@ -160,13 +162,25 @@ class BoilerJuiceDataUpdateCoordinator(
         return data[key] if required else data.get(key, default)
 
     def _validated_kwh_per_litre(self) -> float:
-        """Return the configured energy content, falling back to the default."""
+        """Return the configured energy content, falling back to the default.
+
+        The same bounds the config flow enforces, applied again here: a
+        version-one entry was written before the form had any, so it can hold
+        a figure the UI would now refuse. An unbounded one also multiplies
+        into a stored energy total that the next start would reject as
+        unreadable, which discards the account's history.
+        """
         configured = finite(
             self._config_value(CONF_KWH_PER_LITRE, default=DEFAULT_KWH_PER_LITRE)
         )
-        if configured is None or configured <= 0:
+        if configured is None or not (
+            MIN_KWH_PER_LITRE <= configured <= MAX_KWH_PER_LITRE
+        ):
             _LOGGER.warning(
-                "Configured kWh per litre is not a positive number; using %s",
+                "Configured kWh per litre is not a number between %s and %s; "
+                "using %s. Set it under Reconfigure to change that",
+                MIN_KWH_PER_LITRE,
+                MAX_KWH_PER_LITRE,
                 DEFAULT_KWH_PER_LITRE,
             )
             return DEFAULT_KWH_PER_LITRE

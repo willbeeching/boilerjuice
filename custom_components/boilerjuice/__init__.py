@@ -496,7 +496,7 @@ async def async_migrate_entry(
             ir.async_create_issue(
                 hass,
                 DOMAIN,
-                f"duplicate_account_{entry.entry_id}",
+                _duplicate_issue_id(entry.entry_id),
                 is_fixable=False,
                 severity=ir.IssueSeverity.ERROR,
                 translation_key="duplicate_account",
@@ -511,11 +511,16 @@ async def async_migrate_entry(
             )
             return False
 
-        ir.async_delete_issue(hass, DOMAIN, f"duplicate_account_{entry.entry_id}")
+        ir.async_delete_issue(hass, DOMAIN, _duplicate_issue_id(entry.entry_id))
         hass.config_entries.async_update_entry(entry, unique_id=canonical, version=2)
         _LOGGER.debug("Migrated the BoilerJuice config entry to version 2")
 
     return True
+
+
+def _duplicate_issue_id(entry_id: str) -> str:
+    """Return the repair id for an entry refused as a duplicate."""
+    return f"duplicate_account_{entry_id}"
 
 
 @callback
@@ -589,6 +594,12 @@ async def async_unload_entry(
 async def async_remove_entry(
     hass: HomeAssistant, entry: BoilerJuiceConfigEntry
 ) -> None:
-    """Delete this account's stored consumption history when it is removed."""
+    """Delete this account's stored consumption history when it is removed.
+
+    Also clears the duplicate repair, if this is the entry that repair told
+    the user to delete. Following the instruction and finding the complaint
+    still there is its own small bug report.
+    """
+    ir.async_delete_issue(hass, DOMAIN, _duplicate_issue_id(entry.entry_id))
     coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
     await coordinator.async_remove_storage()

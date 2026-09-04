@@ -15,6 +15,16 @@ CONF_TANKS = "tanks"
 # Default Values
 DEFAULT_KWH_PER_LITRE = 10.35  # typical value for heating oil
 
+# What a litre of any real liquid fuel could hold. Enforced by the config
+# flow and again at runtime, because a version-one entry could hold anything
+# a float can express. The ceiling is also what keeps the stored energy total
+# inside what the storage reader will accept: the largest storable litre
+# figure is 10,000,000 and the reader's kWh bound is a hundred times that, so
+# a factor above 100 could write a total that the next start refused, taking
+# the account's history with it.
+MIN_KWH_PER_LITRE = 0.1
+MAX_KWH_PER_LITRE = 100.0
+
 # URLs
 BASE_URL = "https://www.boilerjuice.com/uk"
 LOGIN_URL = f"{BASE_URL}/users/login"

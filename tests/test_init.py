@@ -237,6 +237,50 @@ async def test_two_version_1_entries_for_one_account_do_not_both_migrate(
     assert issue.translation_key == "duplicate_account"
 
 
+async def test_deleting_the_refused_duplicate_clears_its_repair(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """The repair says to delete one of the two; doing so must end it."""
+    from custom_components.boilerjuice.const import CONF_TANK_ID
+    from homeassistant.config_entries import ConfigEntryState
+    from homeassistant.helpers import issue_registry as ir
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    mock_site(aioclient_mock, tank_html=tank_page(percentage=80, litres=2000))
+    entries = []
+    for email in ("Someone@Example.com", " someone@example.com "):
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            title=f"BoilerJuice ({email.strip()})",
+            version=1,
+            data={
+                CONF_EMAIL: email,
+                CONF_PASSWORD: "hunter2",
+                CONF_TANK_ID: "123456",
+            },
+            unique_id=email,
+        )
+        entry.add_to_hass(hass)
+        entries.append(entry)
+
+    await hass.config_entries.async_setup(entries[0].entry_id)
+    await hass.async_block_till_done()
+
+    refused = next(
+        entry for entry in entries if entry.state is not ConfigEntryState.LOADED
+    )
+    registry = ir.async_get(hass)
+    assert registry.async_get_issue(DOMAIN, f"duplicate_account_{refused.entry_id}")
+
+    assert await hass.config_entries.async_remove(refused.entry_id)
+    await hass.async_block_till_done()
+
+    assert (
+        registry.async_get_issue(DOMAIN, f"duplicate_account_{refused.entry_id}")
+        is None
+    )
+
+
 async def test_a_version_1_entry_colliding_with_a_migrated_one_is_refused(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:

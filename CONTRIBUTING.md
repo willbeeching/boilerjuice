@@ -109,3 +109,15 @@ The release workflow re-runs the whole of CI against that exact commit,
 checks the tag matches the manifest, builds the archive, inspects its
 contents, and only then publishes the release with a SHA-256 digest. A tag
 whose commit fails CI publishes nothing.
+
+A version is published once. The workflow refuses to run against a tag that
+already has a release, because the publish step would otherwise replace its
+archive and the digest people were told to check. To correct a bad release,
+delete it deliberately and tag a new version rather than moving the old tag.
+
+Two repository settings back that up, and neither lives in this repo:
+
+- **Immutable releases**, under Settings, so a published release and its
+  assets cannot be edited at all.
+- **A tag ruleset** for `v*.*.*` that forbids updating and deleting tags, so
+  a tag cannot be moved onto a different commit.

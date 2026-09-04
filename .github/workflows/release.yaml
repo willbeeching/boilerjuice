@@ -93,6 +93,28 @@ jobs:
         with:
           name: boilerjuice-zip
 
+      - name: Refuse to overwrite an existing release
+        # action-gh-release updates a release that already exists, archive
+        # and all. A rerun of this workflow, or a tag moved onto a different
+        # commit, would therefore replace what people have already
+        # downloaded, and the published sha256 with it. A release is a
+        # promise about one specific archive, so publishing over one is
+        # refused here rather than trusted not to happen.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          VERSION: ${{ needs.package.outputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "$VERSION" --repo "$REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release ${VERSION} already exists."
+            echo "Publishing would replace its archive and its published"
+            echo "digest. Delete the release deliberately, or tag a new"
+            echo "version."
+            exit 1
+          fi
+          echo "No release exists for ${VERSION}; safe to publish."
+
       - name: Write the release notes
         # Written to a file rather than a workflow output: a commit subject
         # containing the heredoc delimiter, or a line looking like a workflow

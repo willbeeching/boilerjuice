@@ -26,6 +26,8 @@ from .const import (
     CONF_TANKS,
     DEFAULT_KWH_PER_LITRE,
     DOMAIN,
+    MAX_KWH_PER_LITRE,
+    MIN_KWH_PER_LITRE,
 )
 from .errors import BoilerJuiceAuthError, BoilerJuiceConnectionError, BoilerJuiceError
 from .helpers import normalise_email
@@ -36,7 +38,8 @@ from .parser import validate_tank_id
 # as well as in the coordinator, so the form says no rather than accepting a
 # value that is silently replaced by the default on the next poll.
 ENERGY_CONTENT = vol.All(
-    vol.Coerce(float), vol.Range(min=0.1, min_included=True, max=100)
+    vol.Coerce(float),
+    vol.Range(min=MIN_KWH_PER_LITRE, min_included=True, max=MAX_KWH_PER_LITRE),
 )
 
 _LOGGER = logging.getLogger(__name__)

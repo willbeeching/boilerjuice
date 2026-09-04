@@ -86,7 +86,7 @@ Set at the time you add the account:
 | --- | --- | --- | --- |
 | Email | Yes | — | BoilerJuice account email |
 | Password | Yes | — | BoilerJuice account password |
-| kWh per litre | No | `10.35` | Energy content of your oil |
+| kWh per litre | No | `10.35` | Energy content of your oil, between 0.1 and 100. Kerosene is about 10.35, gas oil about 10.7. A value outside that range, or one carried over from a version before the range existed, falls back to the default with a warning in the log |
 
 Changed afterwards through **Reconfigure** on the integration entry:
 
