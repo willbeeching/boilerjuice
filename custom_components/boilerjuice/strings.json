@@ -55,8 +55,12 @@
   "services": {
     "reset_consumption": {
       "name": "Reset consumption",
-      "description": "Reset the consumption counters, history and references to zero, and clear any manual daily consumption override.",
+      "description": "Reset the consumption counters and references to zero, and clear any manual daily consumption override. The dated history behind the seasonal averages is kept unless you ask for it to go.",
       "fields": {
+        "clear_history": {
+          "name": "Also clear the consumption history",
+          "description": "Deletes the per-day consumption history as well as the counters. The seasonal and monthly averages are built from it and take a year to rebuild, so leave this off unless the history itself is wrong."
+        },
         "entry_id": {
           "name": "Config entry ID",
           "description": "Optional. Targets a whole BoilerJuice account rather than one tank."

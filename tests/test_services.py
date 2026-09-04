@@ -7,6 +7,7 @@ account", which silently wiped the other tank's history.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
@@ -22,6 +23,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
@@ -889,3 +891,83 @@ def test_both_actions_accept_a_boilerjuice_target() -> None:
         assert target["entity"]["integration"] == DOMAIN, name
         assert "device" not in target, name
         assert set(target) <= {"entity", "primary_entities_only"}, name
+
+
+# --- a reset keeps the seasonal history -----------------------------------
+
+
+async def _tank_with_history(hass: HomeAssistant, aioclient_mock: AiohttpClientMocker):
+    """Return an account whose tank has a year of dated consumption."""
+    entry = await setup_account(hass, aioclient_mock)
+    coordinator = coordinator_of(entry)
+    tracker = tracker_of(coordinator)
+
+    winter = dt_util.now().replace(month=1, day=15)
+    tracker.state.history = [
+        (winter + timedelta(days=offset), 9.0) for offset in range(10)
+    ]
+    tracker.state.total_litres = 500.0
+    return entry, coordinator, tracker
+
+
+def _by_day(tracker) -> dict[str, float]:
+    """Return the tank's history as one rounded total per calendar day."""
+    totals: dict[str, float] = {}
+    for moment, litres in tracker.state.history:
+        key = moment.date().isoformat()
+        totals[key] = round(totals.get(key, 0.0) + litres, 3)
+    return totals
+
+
+async def test_a_reset_keeps_the_consumption_history(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Zeroing the counter used to cost a whole heating season.
+
+    The running total answers "how much since I last zeroed it". The dated
+    history answers "what does this tank burn in January". One reset in
+    April took a year of seasonal averages with it.
+    """
+    _, _, tracker = await _tank_with_history(hass, aioclient_mock)
+    before = _by_day(tracker)
+
+    await hass.services.async_call(DOMAIN, SERVICE_RESET_CONSUMPTION, {}, blocking=True)
+    await hass.async_block_till_done()
+
+    assert tracker.state.total_litres == 0.0
+    # Compared per day, not row for row: the next publish collapses the
+    # history to one entry per day, which is what it has always done.
+    assert _by_day(tracker) == before
+
+
+async def test_a_reset_clears_the_history_when_asked(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """History that is itself wrong still needs a way out."""
+    _, _, tracker = await _tank_with_history(hass, aioclient_mock)
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_RESET_CONSUMPTION,
+        {"clear_history": True},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert tracker.state.total_litres == 0.0
+    assert tracker.state.history == []
+
+
+async def test_the_kept_history_survives_a_restart(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Keeping it in memory is no use if the reset wrote an empty document."""
+    _, coordinator, tracker = await _tank_with_history(hass, aioclient_mock)
+    kept = len(tracker.state.history)
+
+    await hass.services.async_call(DOMAIN, SERVICE_RESET_CONSUMPTION, {}, blocking=True)
+    await hass.async_block_till_done()
+
+    account, problem = await coordinator._store.async_load()
+    assert problem is None
+    assert len(account.tanks[TANK_ID].history) == kept

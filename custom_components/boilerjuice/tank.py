@@ -104,9 +104,14 @@ class TankTracker:
         """Put back a state captured by `snapshot`."""
         self.state, self._sample_days = snapshot
 
-    def reset(self) -> None:
-        """Clear the counters, references, history and any manual override."""
-        self.state = self.state.cleared()
+    def reset(self, *, clear_history: bool = False) -> None:
+        """Clear the counters, references and any manual override.
+
+        The dated consumption history is kept unless `clear_history` says
+        otherwise, so zeroing the total does not cost the seasonal
+        averages built up over the year.
+        """
+        self.state = self.state.cleared(keep_history=not clear_history)
         self._sample_days = 0
 
     def set_consumption(

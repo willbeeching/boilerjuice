@@ -410,19 +410,26 @@ class BoilerJuiceDataUpdateCoordinator(
         await self._client.async_close()
 
     async def async_reset_consumption(
-        self, tank_ids: Iterable[str] | None = None
+        self,
+        tank_ids: Iterable[str] | None = None,
+        *,
+        clear_history: bool = False,
     ) -> None:
         """Reset the named tanks, or every tank on the account.
 
         Every named tank is reset, written and published in one pass under
         one lock. Calling this once per tank meant a failure on the second
         left the first permanently reset.
+
+        The dated history is kept unless `clear_history` is set. It backs
+        the seasonal averages, which take a year to rebuild, and a reset
+        is usually about the running total rather than about them.
         """
         async with self._lock:
             trackers = self._selected_trackers(tank_ids)
             undo = [(tracker, tracker.snapshot()) for tracker in trackers]
             for tracker in trackers:
-                tracker.reset()
+                tracker.reset(clear_history=clear_history)
                 self._account.tanks[tracker.tank_id] = tracker.state
             try:
                 await self._async_persist()
