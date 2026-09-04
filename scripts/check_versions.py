@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import re
 import sys
@@ -27,8 +28,13 @@ MIN_REQUIREMENTS = ROOT / "requirements-test-min.txt"
 CURRENT_REQUIREMENTS = ROOT / "requirements-test.txt"
 CI = ROOT / ".github" / "workflows" / "ci.yaml"
 
-SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
-TAG = re.compile(r"^v\d+\.\d+\.\d+$")
+# MAJOR.MINOR.PATCH, optionally followed by a prerelease of dot-separated
+# alphanumeric identifiers: 2.0.0, 2.0.0-beta.1, 2.0.0-rc.2. Build metadata
+# is not accepted, because HACS sorts on the version string and a "+" in it
+# helps nobody. Anything looser would let a typo through as a release.
+SEMVER = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$")
+TAG = re.compile(r"^v" + SEMVER.pattern.removeprefix("^"))
+PRERELEASE = re.compile(r"^\d+\.\d+\.\d+-")
 
 VALID_STATUSES = frozenset({"done", "exempt", "todo"})
 
@@ -128,8 +134,12 @@ def main(argv: list[str]) -> int:
 
     version = manifest["version"]
     if not SEMVER.match(version):
-        fail(f"manifest version {version!r} is not MAJOR.MINOR.PATCH")
-    print(f"  manifest version: {version}")
+        fail(
+            f"manifest version {version!r} is not MAJOR.MINOR.PATCH, "
+            "optionally with a prerelease such as -beta.1"
+        )
+    prerelease = bool(PRERELEASE.match(version))
+    print(f"  manifest version: {version}{' (prerelease)' if prerelease else ''}")
 
     floor = hacs["homeassistant"]
     print(f"  declared Home Assistant floor: {floor}")
@@ -153,10 +163,19 @@ def main(argv: list[str]) -> int:
     if len(argv) > 1:
         tag = argv[1].removeprefix("refs/tags/")
         if not TAG.match(tag):
-            fail(f"tag {tag!r} is not vMAJOR.MINOR.PATCH")
+            fail(
+                f"tag {tag!r} is not vMAJOR.MINOR.PATCH, optionally with a "
+                "prerelease such as -beta.1"
+            )
         if tag.removeprefix("v") != version:
             fail(f"tag {tag} does not match manifest version {version}")
         print(f"  tag {tag} matches the manifest")
+
+        # Written for the release workflow to read, so the published release
+        # is marked pre-release when, and only when, the version says so.
+        if output := os.environ.get("GITHUB_OUTPUT"):
+            with open(output, "a", encoding="utf-8") as handle:
+                handle.write(f"PRERELEASE={'true' if prerelease else 'false'}\n")
 
     print("Versions agree.")
     return 0

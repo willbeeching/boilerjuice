@@ -23,6 +23,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.VERSION }}
       digest: ${{ steps.digest.outputs.SHA256 }}
+      prerelease: ${{ steps.gate.outputs.PRERELEASE }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -48,6 +49,7 @@ jobs:
           echo "VERSION=$version" >> "$GITHUB_OUTPUT"
 
       - name: Check the tag matches the manifest and the HACS floor
+        id: gate
         env:
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: python scripts/check_versions.py "$VERSION"
@@ -189,4 +191,8 @@ jobs:
           files: boilerjuice.zip
           body_path: release-notes.md
           draft: false
-          prerelease: false
+          # Decided by the version, not by hand: a manifest that says
+          # -beta.1 publishes as a pre-release, so HACS offers it only to
+          # people who have asked for betas.
+          prerelease: ${{ needs.package.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.package.outputs.prerelease != 'true' }}

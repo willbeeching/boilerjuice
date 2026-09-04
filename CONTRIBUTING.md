@@ -103,7 +103,13 @@ caught the old behaviour.
 1. Update `version` in `custom_components/boilerjuice/manifest.json`.
 2. If the minimum Home Assistant version moves, update `hacs.json` and
    `requirements-test-min.txt` together, in the same commit.
-3. Tag `vMAJOR.MINOR.PATCH` and push the tag.
+3. Tag `v` plus that version and push the tag.
+
+A prerelease is a version with a suffix: `2.0.0-beta.1`, `2.0.0-rc.2`. The
+manifest carries it like any other version, and the workflow reads it to
+decide how to publish, so there is no separate flag to remember. GitHub marks
+the release as a pre-release and leaves "latest" where it was, and HACS
+offers it only to people who have turned beta versions on.
 
 The release workflow re-runs the whole of CI against that exact commit,
 checks the tag matches the manifest, builds the archive, inspects its

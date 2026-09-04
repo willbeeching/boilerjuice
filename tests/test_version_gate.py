@@ -184,10 +184,70 @@ def test_an_unknown_tier_is_refused(checker) -> None:
         checker.main(["check_versions.py"])
 
 
-@pytest.mark.parametrize("tag", ["v2.0", "2.0.0", "v2.0.0-rc1", "v2.0.0; rm -rf /"])
-def test_a_tag_that_is_not_strict_semver_is_refused(checker, tag: str) -> None:
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "v2.0",
+        "2.0.0",
+        "v2.0.0; rm -rf /",
+        "v2.0.0-",
+        "v2.0.0-beta_1",
+        "v2.0.0+build.5",
+        "v2.0.0-beta.1.",
+    ],
+)
+def test_a_tag_that_is_not_semver_is_refused(checker, tag: str) -> None:
     with pytest.raises(SystemExit):
         checker.main(["check_versions.py", tag])
+
+
+@pytest.mark.parametrize(
+    "version", ["2.0.0", "2.0.0-beta.1", "2.0.0-rc.2", "10.3.11-alpha.10"]
+)
+def test_a_prerelease_version_is_accepted(
+    checker, tmp_path, monkeypatch, version: str
+) -> None:
+    """A beta has to be expressible, or it cannot be released at all."""
+    import json
+
+    manifest = json.loads(MANIFEST.read_text())
+    manifest["version"] = version
+    written = tmp_path / "manifest.json"
+    written.write_text(json.dumps(manifest))
+    monkeypatch.setattr(checker, "MANIFEST", written)
+
+    assert checker.main(["check_versions.py", f"v{version}"]) == 0
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [
+        pytest.param("2.0.0", "false", id="a-release"),
+        pytest.param("2.0.0-beta.1", "true", id="a-beta"),
+        pytest.param("2.0.0-rc.2", "true", id="a-candidate"),
+    ],
+)
+def test_the_release_workflow_is_told_whether_this_is_a_prerelease(
+    checker, tmp_path, monkeypatch, version: str, expected: str
+) -> None:
+    """The workflow marks the release from this, rather than from a hand flag.
+
+    A beta published as a full release is offered to every HACS user, not
+    only to the ones who asked for betas.
+    """
+    import json
+
+    manifest = json.loads(MANIFEST.read_text())
+    manifest["version"] = version
+    written = tmp_path / "manifest.json"
+    written.write_text(json.dumps(manifest))
+    monkeypatch.setattr(checker, "MANIFEST", written)
+
+    output = tmp_path / "github_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+
+    assert checker.main(["check_versions.py", f"v{version}"]) == 0
+    assert f"PRERELEASE={expected}" in output.read_text()
 
 
 def test_a_tag_that_disagrees_with_the_manifest_is_refused(checker) -> None:
