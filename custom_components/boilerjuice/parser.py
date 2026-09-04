@@ -374,7 +374,7 @@ def looks_like_javascript_shell(html: str) -> bool:
     if looks_like_empty_tank_list(soup):
         return False
     shape = describe_page_shape(html)
-    return (
+    return bool(
         shape["is_html"]
         and shape["scripts"] > 0
         and shape["tank_links"] == 0
@@ -385,7 +385,7 @@ def looks_like_javascript_shell(html: str) -> bool:
 def _load_json(body: str) -> Any:
     """Parse `body` as JSON, or raise a parse error that names no content."""
     try:
-        return json.loads(body)
+        return json.loads(body.lstrip("\ufeff \t\r\n"))
     except json.JSONDecodeError:
         raise BoilerJuiceParseError(
             "The BoilerJuice response looked like JSON but did not parse"
@@ -587,19 +587,17 @@ def _parse_tank_json(body: str, tank_id: str) -> TankReading:
     if len(objects) == 1:
         chosen = objects[0]
     else:
-        chosen = next(
-            (
-                obj
-                for obj in objects
-                if validate_tank_id(_first_raw([obj], _JSON_ID_KEYS)) == canonical
-            ),
-            None,
-        )
-        if chosen is None:
+        matches = [
+            obj
+            for obj in objects
+            if validate_tank_id(_first_raw([obj], _JSON_ID_KEYS)) == canonical
+        ]
+        if not matches:
             raise BoilerJuiceParseError(
                 "The BoilerJuice tank JSON listed tanks but not the one "
                 f"requested (page shape: {describe_json_shape(data)})"
             )
+        chosen = matches[0]
 
     fields = _collect_dicts(chosen)
     reading = TankReading(
