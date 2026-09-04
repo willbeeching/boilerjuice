@@ -15,6 +15,7 @@ from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from .helpers import (
+    TANK_ID,
     load_fixture,
     make_entry,
     mock_site,
@@ -235,6 +236,57 @@ async def test_two_version_1_entries_for_one_account_do_not_both_migrate(
     issue = registry.async_get_issue(DOMAIN, f"duplicate_account_{refused.entry_id}")
     assert issue is not None
     assert issue.translation_key == "duplicate_account"
+
+
+async def test_a_failed_setup_releases_the_session_and_the_tanks(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """async_unload_entry never runs for a setup that failed.
+
+    Home Assistant retries every couple of minutes, and each attempt was
+    leaving behind its aiohttp session and its claim on the tanks. The claim
+    is the one that bites: once the account came back, its own tanks were
+    held by a coordinator that no longer existed.
+    """
+    from unittest.mock import patch
+
+    from custom_components.boilerjuice.const import TANK_CLAIMS
+    from custom_components.boilerjuice.coordinator import (
+        BoilerJuiceDataUpdateCoordinator,
+    )
+    from homeassistant.helpers.update_coordinator import UpdateFailed
+
+    mock_site(aioclient_mock, tank_html=tank_page(percentage=80, litres=2000))
+    entry = make_entry(hass)
+
+    closed: list[bool] = []
+    real_close = BoilerJuiceDataUpdateCoordinator.async_close
+
+    async def watched_close(self):
+        closed.append(True)
+        await real_close(self)
+
+    with (
+        patch.object(
+            BoilerJuiceDataUpdateCoordinator,
+            "_async_collect",
+            side_effect=UpdateFailed("BoilerJuice is down"),
+        ),
+        patch.object(BoilerJuiceDataUpdateCoordinator, "async_close", watched_close),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert closed == [True]
+    assert not hass.data.get(TANK_CLAIMS)
+
+    # The retry, once BoilerJuice is back, gets its own tanks.
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data.coordinator.tank_ids == [TANK_ID]
 
 
 async def test_deleting_the_refused_duplicate_clears_its_repair(

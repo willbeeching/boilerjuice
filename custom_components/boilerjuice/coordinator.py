@@ -37,6 +37,7 @@ from .const import (
     DOMAIN,
     MAX_KWH_PER_LITRE,
     MIN_KWH_PER_LITRE,
+    TANK_CLAIMS,
 )
 from .errors import BoilerJuiceAuthError, BoilerJuiceParseError
 from .helpers import async_tank_device
@@ -336,7 +337,13 @@ class BoilerJuiceDataUpdateCoordinator(
     # ------------------------------------------------------------------
 
     async def async_close(self) -> None:
-        """Close the client's session (call on unload)."""
+        """Close the client's session and release its tanks (call on unload).
+
+        The claims have to go, or an account removed and added again would
+        find its own tanks already taken.
+        """
+        self._release_claims()
+        ir.async_delete_issue(self.hass, DOMAIN, self._claim_issue_id)
         await self._client.async_close()
 
     async def async_reset_consumption(
@@ -474,7 +481,13 @@ class BoilerJuiceDataUpdateCoordinator(
         return set(included) if included else None
 
     def _wanted(self, listed: list[str]) -> list[str]:
-        """Return the tanks this entry should track, in listing order."""
+        """Return the tanks this entry is configured to track, in listing order.
+
+        Configuration only, and with no side effects: it is asked twice per
+        refresh, once to decide what to fetch and once to tell "you have
+        excluded every tank" apart from "another account has them", which are
+        different problems with different answers.
+        """
         if self._pinned_tank_id:
             return [self._pinned_tank_id]
 
@@ -482,6 +495,83 @@ class BoilerJuiceDataUpdateCoordinator(
         if selected is not None:
             return [tank_id for tank_id in listed if tank_id in selected]
         return listed
+
+    @property
+    def _claims(self) -> dict[str, str]:
+        """Return the map of tank id to the config entry that owns it."""
+        claims: dict[str, str] = self.hass.data.setdefault(TANK_CLAIMS, {})
+        return claims
+
+    @callback
+    def _claimable(self, tank_ids: list[str]) -> list[str]:
+        """Return the tanks this entry may track, claiming them as it goes.
+
+        Entity unique ids are keyed by tank id alone, so two accounts that
+        list the same tank would collide on every entity: the second entry
+        would get a device with nothing on it, and the two would keep
+        separate histories for one physical tank. The first account to see a
+        tank keeps it, and the second is told which one has it.
+
+        Claiming happens here, synchronously, rather than by asking the
+        device registry who owns the tank. Two entries setting up at the same
+        time both reach their first refresh before either has registered a
+        device, so a registry lookup would let both through.
+        """
+        if self._entry_id is None:
+            return tank_ids
+
+        claims = self._claims
+        mine: list[str] = []
+        taken: dict[str, str] = {}
+        for tank_id in tank_ids:
+            owner = claims.setdefault(tank_id, self._entry_id)
+            if owner == self._entry_id:
+                mine.append(tank_id)
+            else:
+                taken[tank_id] = owner
+        self._refresh_claim_issue(taken)
+        return mine
+
+    def _refresh_claim_issue(self, taken: dict[str, str]) -> None:
+        """Raise or clear the "another account already has this tank" repair."""
+        if not taken:
+            ir.async_delete_issue(self.hass, DOMAIN, self._claim_issue_id)
+            return
+
+        owners = {
+            entry.entry_id: entry.title
+            for entry in self.hass.config_entries.async_entries(DOMAIN)
+        }
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            self._claim_issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="tank_claimed_elsewhere",
+            translation_placeholders={
+                "tanks": ", ".join(sorted(taken)),
+                "accounts": ", ".join(
+                    sorted({owners.get(owner, owner) for owner in taken.values()})
+                ),
+            },
+        )
+
+    @property
+    def _claim_issue_id(self) -> str:
+        """Return the repair issue id for this entry's tank conflicts."""
+        return f"tank_claimed_elsewhere_{self._entry_id}"
+
+    @callback
+    def _release_claims(self, tank_ids: Iterable[str] | None = None) -> None:
+        """Give up this entry's claim on the named tanks, or on all of them."""
+        if self._entry_id is None:
+            return
+        claims = self._claims
+        wanted = set(tank_ids) if tank_ids is not None else set(claims)
+        for tank_id in wanted:
+            if claims.get(tank_id) == self._entry_id:
+                del claims[tank_id]
 
     async def _async_refresh_price(self) -> None:
         """Refresh the oil price, keeping the last good value on failure."""
@@ -585,6 +675,7 @@ class BoilerJuiceDataUpdateCoordinator(
 
     def _forget(self, tank_id: str) -> None:
         """Retire a tank: drop its device and tracker, keep its history."""
+        self._release_claims([tank_id])
         self._trackers.pop(tank_id, None)
         self._account.missing.pop(tank_id, None)
         self._forget_health(tank_id)
@@ -708,7 +799,9 @@ class BoilerJuiceDataUpdateCoordinator(
 
         self._note_success(ACCOUNT_SCOPE)
 
-        wanted = self._wanted(listed)
+        # Claimed here, before anything is fetched: a tank another account
+        # already has is not ours to read, let alone to build entities for.
+        wanted = self._claimable(self._wanted(listed))
         if not wanted:
             # Nothing to read, but the listing was authoritative: the caller
             # reconciles against it and then reports the failure. Raising
@@ -776,9 +869,13 @@ class BoilerJuiceDataUpdateCoordinator(
                     "survive a restart until a later write succeeds"
                 )
 
-            if not wanted:
+            if not self._wanted(listed):
                 # Reported only after reconciling, so the removal counting
-                # above has already run and been persisted.
+                # above has already run and been persisted. Asked of the
+                # configuration rather than of `wanted`: an account whose
+                # tanks all belong to another entry has a conflict, already
+                # explained by its own repair, and must not spend the rest of
+                # the day retrying setup over it.
                 raise UpdateFailed(
                     "No BoilerJuice tank on this account matches the "
                     "integration's configuration"

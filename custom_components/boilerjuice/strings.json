@@ -94,6 +94,10 @@
     "page_layout_changed": {
       "title": "BoilerJuice has changed its website",
       "description": "The BoilerJuice tank page no longer contains the oil level or volume where this integration looks for them, so tank readings have stopped updating. Existing consumption history is intact and untouched. This needs a new version of the integration: please check for an update, and report it on the issue tracker if there is not one yet."
+    },
+    "tank_claimed_elsewhere": {
+      "title": "A tank is already tracked by another BoilerJuice account",
+      "description": "These tanks are already being tracked by another configured BoilerJuice account ({accounts}), so this one is leaving them alone: {tanks}. A tank can only belong to one account here, because its entities are named after the tank rather than the account. If this account is the one that should have them, remove the other and restart Home Assistant."
     }
   },
   "entity": {

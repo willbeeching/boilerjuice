@@ -255,3 +255,83 @@ def test_no_dev_pin_collides_with_home_assistant() -> None:
         "requirements-dev.txt pins versions Home Assistant pins differently, "
         f"so the two files cannot be installed together: {collisions}"
     )
+
+
+# --- the release workflow's own guards ------------------------------------
+
+
+def _release_workflow() -> dict:
+    import pathlib as _pathlib
+
+    import yaml
+
+    return yaml.safe_load(
+        _pathlib.Path(".github/workflows/release.yaml").read_text(encoding="utf-8")
+    )
+
+
+def test_publishing_is_refused_when_the_version_already_has_a_release() -> None:
+    """action-gh-release updates an existing release, archive and all."""
+    steps = _release_workflow()["jobs"]["publish"]["steps"]
+    names = [step.get("name", "") for step in steps]
+
+    guard = "Refuse to overwrite an existing release"
+    assert guard in names, names
+    publish = next(
+        index
+        for index, step in enumerate(steps)
+        if "action-gh-release" in str(step.get("uses", ""))
+    )
+    assert names.index(guard) < publish, "the guard has to run before publishing"
+
+
+@pytest.mark.parametrize(
+    ("response", "exit_code", "expected"),
+    [
+        pytest.param("{...}", 0, "refuse", id="release-exists"),
+        pytest.param("gh: Not Found (HTTP 404)", 1, "publish", id="no-release"),
+        pytest.param("gh: Bad credentials (HTTP 401)", 1, "refuse", id="bad-token"),
+        pytest.param("gh: rate limit (HTTP 403)", 1, "refuse", id="rate-limited"),
+        pytest.param("dial tcp: no such host", 1, "refuse", id="network-down"),
+        pytest.param("gh: Server Error (HTTP 500)", 1, "refuse", id="github-down"),
+    ],
+)
+def test_the_release_check_fails_closed(
+    response: str, exit_code: int, expected: str
+) -> None:
+    """Only a 404 means "no release yet".
+
+    Anything else - a token problem, a rate limit, an outage - used to look
+    the same as a missing release, so the one day GitHub was unwell was the
+    day the guard let a republish through.
+    """
+    import re
+    import subprocess
+
+    steps = _release_workflow()["jobs"]["publish"]["steps"]
+    script = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Refuse to overwrite an existing release"
+    )
+
+    # Run the workflow's own script with `gh` replaced by a stub that returns
+    # the response and exit code under test.
+    stub = (
+        f"gh() {{ printf '%s' {response!r}; return {exit_code}; }}\n"
+        "REPOSITORY=owner/repo\nVERSION=v1.0.0\n"
+    )
+    assert "gh api" in script, "the script no longer calls gh api"
+    result = subprocess.run(
+        ["bash", "-c", stub + script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    if expected == "publish":
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "safe to publish" in result.stdout
+    else:
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert re.search(r"::error::", result.stdout)

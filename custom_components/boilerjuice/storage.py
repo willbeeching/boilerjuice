@@ -371,6 +371,12 @@ class ConsumptionStore:
         document = await self._store.async_load()
 
         if document is not None:
+            # A migration that wrote the destination but could not clear the
+            # source leaves a slot behind, and a slot is not inert: another
+            # entry pinned to the same tank id would adopt it as its own
+            # history. Migration never runs again once the destination
+            # exists, so the cleanup is retried here instead.
+            await self._async_discard_legacy_slot()
             try:
                 return account_from_document(document), None
             except InvalidStoredData as err:
@@ -449,11 +455,7 @@ class ConsumptionStore:
             # the next start tries again.
             await self.async_save(account)
 
-            del shared[slot]
-            if shared:
-                await self._legacy.async_save(shared)
-            else:
-                await self._legacy.async_remove()
+            await self._async_drop_slot(shared, slot)
 
             _LOGGER.info(
                 "Migrated BoilerJuice consumption history out of the shared "
@@ -461,6 +463,49 @@ class ConsumptionStore:
             )
 
             return account, reason
+
+    async def _async_discard_legacy_slot(self) -> None:
+        """Remove this entry's slot from the shared v1 document, if it is there.
+
+        A no-op once the shared document is gone, which is the ordinary case
+        after the first successful migration.
+        """
+        lock = self._hass.data.setdefault(LEGACY_MIGRATION_LOCK, asyncio.Lock())
+
+        async with lock:
+            shared = await self._legacy.async_load()
+            if not shared:
+                return
+            slot = self._slot_in(shared)
+            if slot is None:
+                return
+            await self._async_drop_slot(shared, slot)
+
+    async def _async_drop_slot(self, shared: dict[str, Any], slot: str) -> None:
+        """Write the shared document without `slot`, and confirm it went.
+
+        Verified for the same reason the destination is: Home Assistant's
+        Store logs a failed write and returns normally, so a slot that was
+        never actually deleted looked exactly like one that was, and the
+        next entry pinned to that tank id would adopt our history.
+
+        Only the write is read back. `async_remove` unlinks the file and
+        suppresses nothing but FileNotFoundError, so a removal that fails
+        raises on its own.
+        """
+        del shared[slot]
+
+        if not shared:
+            await self._legacy.async_remove()
+            return
+
+        await self._legacy.async_save(shared)
+
+        if self._hass.state is CoreState.stopping:
+            return
+
+        if await self._legacy.async_load() != shared:
+            raise StorageWriteFailed(LEGACY_STORAGE_KEY)
 
     async def async_save(self, account: AccountState) -> None:
         """Write `account`, and confirm it reached the disk.

@@ -238,8 +238,12 @@ def _resolve_targets(
 
     # A floor is a set of areas, and resolves through them. Left unhandled it
     # looked like no target at all, which is the fallback that erases
-    # everything on a single-account system.
-    area_ids = set(targets["area_id"]) | _areas_in_floors(hass, targets["floor_id"])
+    # everything on a single-account system. A label can be put on an area as
+    # well as on a device or an entity, and that spelling of "the tanks in
+    # the plant room" has to reach the same tanks as the others.
+    area_ids = set(targets["area_id"])
+    area_ids |= _areas_in_floors(hass, targets["floor_id"])
+    area_ids |= _areas_with_labels(hass, targets["label_id"])
 
     device_ids = set(targets["device_id"])
     device_ids |= _devices_for_entities(hass, targets["entity_id"])
@@ -317,6 +321,16 @@ def _areas_in_floors(hass: HomeAssistant, floor_ids: Iterable[str]) -> set[str]:
         area.id
         for floor_id in floor_ids
         for area in ar.async_entries_for_floor(registry, floor_id)
+    }
+
+
+def _areas_with_labels(hass: HomeAssistant, label_ids: Iterable[str]) -> set[str]:
+    """Return the ids of the areas carrying the given labels."""
+    registry = ar.async_get(hass)
+    return {
+        area.id
+        for label_id in label_ids
+        for area in ar.async_entries_for_label(registry, label_id)
     }
 
 
@@ -556,8 +570,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: BoilerJuiceConfigEntry) 
     coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
 
     # Raises ConfigEntryNotReady, or ConfigEntryAuthFailed (which starts a
-    # reauth flow), by itself.
-    await coordinator.async_config_entry_first_refresh()
+    # reauth flow), by itself. Closed by hand on the way out, because
+    # async_unload_entry never runs for a setup that failed: Home Assistant
+    # retries every couple of minutes, and each attempt was leaving behind
+    # its session and its claim on the account's tanks.
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except Exception:
+        await coordinator.async_close()
+        raise
 
     entry.runtime_data = BoilerJuiceRuntimeData(coordinator=coordinator)
 

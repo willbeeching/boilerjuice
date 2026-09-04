@@ -1108,3 +1108,88 @@ async def test_a_reset_shows_immediately_even_with_the_site_down(
     assert coordinator.data[FIRST]["total_consumption_usable_liters"] == 0.0
     # The tank nobody named keeps what it had.
     assert coordinator.data[SECOND]["total_consumption_usable_liters"] == 90.0
+
+
+async def test_a_second_account_does_not_take_a_tank_the_first_has(
+    hass: HomeAssistant, account: MockConfigEntry, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Entity unique ids are keyed by tank, so two owners collide on every one.
+
+    The second account got a device with nothing on it, and the two kept
+    separate histories for one physical tank. The first to see a tank keeps
+    it, and the second is told which account has it.
+    """
+    from homeassistant.helpers import issue_registry as ir
+
+    first = coordinator_of(account)
+    assert sorted(first.tank_ids) == [FIRST, SECOND]
+
+    other = MockConfigEntry(
+        domain=DOMAIN,
+        title="BoilerJuice (someone-else@example.com)",
+        data={CONF_EMAIL: "someone-else@example.com", CONF_PASSWORD: "hunter2"},
+        unique_id="someone-else@example.com",
+    )
+    other.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(other.entry_id)
+    await hass.async_block_till_done()
+
+    assert coordinator_of(other).tank_ids == []
+    assert sorted(first.tank_ids) == [FIRST, SECOND]
+
+    issue = ir.async_get(hass).async_get_issue(
+        DOMAIN, f"tank_claimed_elsewhere_{other.entry_id}"
+    )
+    assert issue is not None
+    assert issue.translation_key == "tank_claimed_elsewhere"
+    placeholders = issue.translation_placeholders or {}
+    assert FIRST in placeholders["tanks"]
+    assert account.title in placeholders["accounts"]
+
+
+async def test_removing_the_first_account_frees_its_tanks(
+    hass: HomeAssistant, account: MockConfigEntry, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """A claim that outlived its account would lock the tank out for good."""
+    first = coordinator_of(account)
+    assert sorted(first.tank_ids) == [FIRST, SECOND]
+
+    assert await hass.config_entries.async_remove(account.entry_id)
+    await hass.async_block_till_done()
+
+    other = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_EMAIL: "someone-else@example.com", CONF_PASSWORD: "hunter2"},
+        unique_id="someone-else@example.com",
+    )
+    other.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(other.entry_id)
+    await hass.async_block_till_done()
+
+    assert sorted(coordinator_of(other).tank_ids) == [FIRST, SECOND]
+
+
+async def test_a_retired_tank_can_be_claimed_by_another_account(
+    hass: HomeAssistant, account: MockConfigEntry, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Retiring a tank has to give up the claim as well as the device."""
+    first = coordinator_of(account)
+    mock_account(aioclient_mock, ONE_TANK)
+    for _ in range(MISSING_LISTINGS_BEFORE_REMOVAL):
+        await first.async_refresh()
+        await hass.async_block_till_done()
+
+    assert first.tank_ids == [FIRST]
+
+    # Both tanks are listed again; only the retired one is free to claim.
+    mock_account(aioclient_mock, TWO_TANKS)
+    other = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_EMAIL: "someone-else@example.com", CONF_PASSWORD: "hunter2"},
+        unique_id="someone-else@example.com",
+    )
+    other.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(other.entry_id)
+    await hass.async_block_till_done()
+
+    assert coordinator_of(other).tank_ids == [SECOND]

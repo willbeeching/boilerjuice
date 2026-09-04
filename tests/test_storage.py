@@ -233,6 +233,90 @@ async def test_a_restart_resumes_from_the_stored_totals(
 # --- migration from the shared v1 document --------------------------------
 
 
+async def test_a_legacy_slot_that_survived_cleanup_is_dropped_next_start(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    """A slot left in the shared document is not inert.
+
+    Migration only runs while the destination is missing, so a cleanup that
+    failed used to leave the slot there for good. Another entry pinned to the
+    same tank id would then adopt it as its own history.
+    """
+    from custom_components.boilerjuice.storage import LEGACY_STORAGE_KEY
+
+    entry = make_entry(hass)
+    other = make_entry(hass, email="two@example.com", tank_id="222222")
+    hass_storage[LEGACY_STORAGE_KEY] = {
+        "version": 1,
+        "data": {
+            entry.entry_id: {"total_consumption_liters": 330.0},
+            other.entry_id: {"total_consumption_liters": 90.0},
+        },
+    }
+
+    store = ConsumptionStore(hass, entry.entry_id, None)
+    account, reason = await store.async_load()
+    assert reason is None
+    assert account.unassigned is not None
+
+    # Put the slot back, as a failed cleanup would have left it.
+    hass_storage[LEGACY_STORAGE_KEY]["data"][entry.entry_id] = {
+        "total_consumption_liters": 330.0
+    }
+
+    await store.async_load()
+
+    assert entry.entry_id not in hass_storage[LEGACY_STORAGE_KEY]["data"]
+    # Somebody else's slot is left exactly where it is.
+    assert hass_storage[LEGACY_STORAGE_KEY]["data"][other.entry_id] == {
+        "total_consumption_liters": 90.0
+    }
+
+
+async def test_a_failed_legacy_cleanup_is_reported_not_assumed(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    """Store logs a failed write and returns, so the removal has to be checked."""
+    from unittest.mock import patch
+
+    from custom_components.boilerjuice.storage import (
+        LEGACY_STORAGE_KEY,
+        StorageWriteFailed,
+    )
+    from homeassistant.helpers.storage import Store
+    from homeassistant.util.file import WriteError
+
+    entry = make_entry(hass)
+    other = make_entry(hass, email="two@example.com", tank_id="222222")
+    hass_storage[LEGACY_STORAGE_KEY] = {
+        "version": 1,
+        "data": {
+            entry.entry_id: {"total_consumption_liters": 330.0},
+            other.entry_id: {"total_consumption_liters": 90.0},
+        },
+    }
+
+    store = ConsumptionStore(hass, entry.entry_id, None)
+    real = Store._async_write_data
+
+    # *args because the signature moved between the two supported Home
+    # Assistant versions; this only needs to know whose write it is.
+    async def fail_the_legacy_write(self, *args):
+        if self.key == LEGACY_STORAGE_KEY:
+            raise WriteError("no space left")
+        await real(self, *args)
+
+    with (
+        patch.object(Store, "_async_write_data", fail_the_legacy_write),
+        pytest.raises(StorageWriteFailed),
+    ):
+        await store.async_load()
+
+    assert hass_storage[LEGACY_STORAGE_KEY]["data"][entry.entry_id] == {
+        "total_consumption_liters": 330.0
+    }
+
+
 async def test_a_failed_migration_leaves_the_legacy_history_where_it_is(
     hass: HomeAssistant, hass_storage
 ) -> None:

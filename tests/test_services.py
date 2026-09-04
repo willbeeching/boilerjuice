@@ -522,6 +522,62 @@ async def test_a_misspelled_target_is_refused_not_widened(
     assert tracker_of(coordinator).total_litres == 40.0
 
 
+async def test_a_label_on_an_area_reaches_the_tanks_in_it(
+    hass: HomeAssistant, two_accounts
+) -> None:
+    """A label can be put on an area, not only on a device or an entity.
+
+    That spelling was unresolved, so it looked like no target at all, and on
+    a single-account system that means every tank.
+    """
+    from homeassistant.helpers import area_registry as ar
+    from homeassistant.helpers import label_registry as lr
+
+    first, second = two_accounts
+    label = lr.async_get(hass).async_create("Plant room")
+    area = ar.async_get(hass).async_create("Utility")
+    ar.async_get(hass).async_update(area.id, labels={label.label_id})
+    device = tank_device(hass, second, "222222")
+    assert device is not None
+    dr.async_get(hass).async_update_device(device.id, area_id=area.id)
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_RESET_CONSUMPTION,
+        {"label_id": label.label_id},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert totals(hass, first, second) == [40.0, 0.0]
+
+
+async def test_a_label_on_an_empty_area_is_refused(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """An area label that reaches no tank must not widen to the account."""
+    from homeassistant.helpers import area_registry as ar
+    from homeassistant.helpers import label_registry as lr
+
+    entry = await setup_account(hass, aioclient_mock)
+    coordinator = coordinator_of(entry)
+    await coordinator.async_set_consumption(40.0)
+
+    label = lr.async_get(hass).async_create("Loft")
+    area = ar.async_get(hass).async_create("Loft")
+    ar.async_get(hass).async_update(area.id, labels={label.label_id})
+
+    with pytest.raises(ServiceValidationError):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_RESET_CONSUMPTION,
+            {"label_id": label.label_id},
+            blocking=True,
+        )
+
+    assert tracker_of(coordinator).total_litres == 40.0
+
+
 async def test_a_floor_target_reaches_only_the_tanks_on_it(
     hass: HomeAssistant, two_accounts
 ) -> None:

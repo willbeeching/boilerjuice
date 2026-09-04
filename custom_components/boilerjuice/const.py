@@ -25,6 +25,13 @@ DEFAULT_KWH_PER_LITRE = 10.35  # typical value for heating oil
 MIN_KWH_PER_LITRE = 0.1
 MAX_KWH_PER_LITRE = 100.0
 
+# Which config entry owns each tank, keyed by tank id. Entity unique ids are
+# keyed by tank id alone, so two accounts listing the same tank would collide
+# on every entity and keep two separate histories for one physical tank. The
+# claim is taken synchronously, which is what makes it safe when two entries
+# set up at once.
+TANK_CLAIMS = f"{DOMAIN}_tank_claims"
+
 # URLs
 BASE_URL = "https://www.boilerjuice.com/uk"
 LOGIN_URL = f"{BASE_URL}/users/login"

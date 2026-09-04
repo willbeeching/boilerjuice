@@ -106,11 +106,21 @@ jobs:
           VERSION: ${{ needs.package.outputs.version }}
         run: |
           set -euo pipefail
-          if gh release view "$VERSION" --repo "$REPOSITORY" >/dev/null 2>&1; then
+          # Fails closed. A non-zero exit from the API means "no release" only
+          # when it is a 404; a token problem, a rate limit or an outage looks
+          # the same to `gh release view`, and treating those as "no release"
+          # would publish over one on exactly the days things are going wrong.
+          if response=$(gh api "repos/${REPOSITORY}/releases/tags/${VERSION}" 2>&1); then
             echo "::error::Release ${VERSION} already exists."
             echo "Publishing would replace its archive and its published"
             echo "digest. Delete the release deliberately, or tag a new"
             echo "version."
+            exit 1
+          fi
+          if ! printf '%s' "$response" | grep -q "(HTTP 404)"; then
+            echo "::error::Could not tell whether ${VERSION} already has a release."
+            echo "Refusing to publish rather than risk replacing one."
+            printf '%s\n' "$response"
             exit 1
           fi
           echo "No release exists for ${VERSION}; safe to publish."
