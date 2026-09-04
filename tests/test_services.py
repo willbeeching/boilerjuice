@@ -809,7 +809,15 @@ def test_every_translation_key_raised_in_the_code_exists() -> None:
 
 
 def test_both_actions_accept_a_boilerjuice_target() -> None:
-    """Without a target block the UI offers no way to pick a tank."""
+    """Without a target block the UI offers no way to pick a tank.
+
+    Filtered by entity and nothing else. A service target does not take a
+    device filter: Home Assistant's own runtime schema still accepts one, so
+    only hassfest catches it, and it caught this on the first hosted run.
+    Every one of the 489 target blocks Home Assistant ships filters by entity
+    alone. The picker still offers the devices and areas that hold these
+    entities, which is what makes per-tank targeting work.
+    """
     import pathlib
 
     import yaml
@@ -821,5 +829,7 @@ def test_both_actions_accept_a_boilerjuice_target() -> None:
     )
 
     for name, definition in actions.items():
-        assert definition["target"]["device"]["integration"] == DOMAIN, name
-        assert definition["target"]["entity"]["integration"] == DOMAIN, name
+        target = definition["target"]
+        assert target["entity"]["integration"] == DOMAIN, name
+        assert "device" not in target, name
+        assert set(target) <= {"entity", "primary_entities_only"}, name

@@ -1,3 +1,8 @@
+# Entity filter only on every target. A service target does not take a device
+# filter - hassfest rejects one - and it does not need to: the picker offers
+# the devices and areas holding these entities, and Home Assistant still
+# passes device_id, area_id, floor_id and label_id through in the call.
+
 reset_consumption:
   name: Reset consumption
   description: >-
@@ -7,8 +12,6 @@ reset_consumption:
     BoilerJuice account configured, a target is required, and it must name
     one account: a target reaching two is refused rather than half-applied.
   target:
-    device:
-      integration: boilerjuice
     entity:
       integration: boilerjuice
   fields:
@@ -28,8 +31,6 @@ set_consumption:
     BoilerJuice account configured, a target is required, and it must name
     one account: a target reaching two is refused rather than half-applied.
   target:
-    device:
-      integration: boilerjuice
     entity:
       integration: boilerjuice
   fields:
