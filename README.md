@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/willbeeching/boilerjuice/actions/workflows/ci.yaml/badge.svg)](https://github.com/willbeeching/boilerjuice/actions/workflows/ci.yaml)
 [![GitHub Release](https://img.shields.io/github/v/release/willbeeching/boilerjuice)](https://github.com/willbeeching/boilerjuice/releases)
+[![Downloads](https://img.shields.io/github/downloads/willbeeching/boilerjuice/total?label=downloads)](https://github.com/willbeeching/boilerjuice/releases)
+[![Installs](https://img.shields.io/badge/dynamic/json?color=41BDF5&logo=home-assistant&label=installs&suffix=%20homes&url=https%3A%2F%2Fanalytics.home-assistant.io%2Fcustom_integrations.json&query=%24.boilerjuice.total)](https://analytics.home-assistant.io/)
 [![License](https://img.shields.io/github/license/willbeeching/boilerjuice)](LICENSE)
 [![HACS](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz/docs/faq/custom_repositories)
 
