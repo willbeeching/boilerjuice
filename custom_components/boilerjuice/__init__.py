@@ -67,7 +67,16 @@ _TARGET_FIELDS: dict[Any, Any] = {
     vol.Optional(key): vol.Any(cv.string, [cv.string]) for key in TARGET_KEYS
 }
 
-RESET_CONSUMPTION_SCHEMA = vol.Schema(dict(_TARGET_FIELDS))
+# `clear_history` defaults to false, so the common reset ("I refilled, zero
+# the counter") no longer takes the dated history with it. The seasonal
+# averages take a year to rebuild and a reset in April used to cost the whole
+# of the preceding heating season.
+RESET_CONSUMPTION_SCHEMA = vol.Schema(
+    {
+        **_TARGET_FIELDS,
+        vol.Optional("clear_history", default=False): cv.boolean,
+    }
+)
 
 # Bounded by what storage will accept back, not merely by being positive.
 # cv.positive_float took 10_000_001 litres, and infinity, and NaN; the action
@@ -411,7 +420,11 @@ def async_setup_services(hass: HomeAssistant) -> None:
     async def async_handle_reset_consumption(call: ServiceCall) -> None:
         """Handle the service call to reset consumption."""
         coordinator, tank_ids = _resolve_targets(hass, call)
-        await _stored_history_change(coordinator.async_reset_consumption(tank_ids))
+        await _stored_history_change(
+            coordinator.async_reset_consumption(
+                tank_ids, clear_history=call.data["clear_history"]
+            )
+        )
         # The reset has already been published from what we hold. This asks
         # for fresh readings on top; whether it succeeds does not change what
         # the entities show.

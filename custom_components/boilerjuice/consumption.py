@@ -225,7 +225,7 @@ def seasonal_stats(
     stats["monthly"] = {}
     # None, not 0.0: a season we have never seen is unknown, and publishing
     # zero would claim the tank measurably burnt nothing all winter.
-    stats["current_season"] = {"name": None, "avg": None, "min": None, "max": None}
+    stats["current_season"] = {"avg": None, "min": None, "max": None}
 
     for date, litres in totals.items():
         moment = midnight(date)
@@ -244,7 +244,6 @@ def seasonal_stats(
     current = season_for(now)
     if stats[current]:
         stats["current_season"] = {
-            "name": current,
             "avg": round(statistics.mean(stats[current]), 1),
             "min": round(min(stats[current]), 1),
             "max": round(max(stats[current]), 1),

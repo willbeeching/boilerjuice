@@ -47,6 +47,11 @@ def _tank_diagnostics(
         "has_reference_volume": tracker.state.reference_volume is not None,
         "has_reference_level": tracker.state.reference_level is not None,
         "history_rows": len(tracker.state.history),
+        # A row count alone hides a gap. These say how far back the history
+        # reaches and which months are actually populated, which is what
+        # tells a lost season apart from a season that has not started.
+        "history_span": _history_span(tracker),
+        "history_rows_by_month": _rows_by_month(tracker),
         "consumption_sample_days": tracker.sample_days,
         "daily_rate_is_manual": tracker.daily_is_manual,
         "has_measured_daily_rate": tracker.state.daily_litres is not None,
@@ -63,6 +68,31 @@ def _tank_diagnostics(
             if (state.get("seasonal_stats") or {}).get(f"{season}_avg") is not None
         ),
     }
+
+
+def _history_span(tracker: TankTracker) -> dict[str, str] | None:
+    """Return the first and last dated rows, or None when there are none."""
+    if not tracker.state.history:
+        return None
+    moments = [moment for moment, _ in tracker.state.history]
+    return {
+        "first": min(moments).date().isoformat(),
+        "last": max(moments).date().isoformat(),
+    }
+
+
+def _rows_by_month(tracker: TankTracker) -> dict[str, int]:
+    """Return how many dated rows fall in each month, oldest first.
+
+    A month missing from this map is a month with no recorded consumption.
+    Reading it beside "history_span" is how a reset that dropped a heating
+    season shows up without anyone opening the stored file.
+    """
+    counts: dict[str, int] = {}
+    for moment, _ in sorted(tracker.state.history, key=lambda row: row[0]):
+        key = moment.strftime("%Y-%m")
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 async def async_get_config_entry_diagnostics(

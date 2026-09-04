@@ -130,7 +130,7 @@ One set per tank.
 | Daily oil consumption | L/day | Rolling 7-day average. Unknown until a complete day has been measured. `sample_days` says how much evidence is behind it |
 | Total oil consumption | L | Accumulates since the last reset |
 | Total oil energy | kWh | Accumulated using the kWh per litre in force at the time. **This is the Energy dashboard sensor** |
-| Seasonal oil consumption | L/day | Current season's average, with per-season and per-month figures as attributes |
+| Seasonal oil consumption | L/day | Current season's average, with per-season and per-month figures as attributes. Unknown until a day in this season has been recorded, which on 1 September means waiting for the first autumn reading |
 | Days until empty | d | Current volume divided by the daily rate, falling back to an estimate of 2% of capacity per day when there is no history yet |
 
 ### Price and energy
@@ -147,7 +147,7 @@ One set per tank.
 | --- | --- |
 | Last level change | When the tank level last changed. It is normal for this to sit still for days |
 | Last successful update | When the account was last polled successfully |
-| Heating season | Winter, spring, summer or autumn: the season the seasonal average is currently being taken from. Unknown until a day in this season has been recorded |
+| Heating season | Winter, spring, summer or autumn, read off the calendar. Always set, whether or not the season has recorded any consumption yet |
 
 ## How consumption tracking works
 
@@ -209,18 +209,41 @@ Other behaviour worth knowing:
   unknown until the integration has observed consumption during it. On a
   fresh install the current season populates quickly and the other three fill
   in as the year goes round. This is a data availability limit, not a fault.
+- **A season goes quiet at its boundary.** Consumption is only recorded when
+  BoilerJuice reports a lower level, and on a large tank a slow burn can take
+  a week to show up. Between 1 September and the first detected autumn drop,
+  the seasonal sensor has no autumn to report. When that drop arrives the
+  litres are spread back over every day since the last one, so the days in
+  between fill in retroactively rather than being lost.
+- **Diagnostics say where the history reaches.** `history_span` and
+  `history_rows_by_month` in the diagnostics download show which months hold
+  data. A month missing from the middle is history that went away; months
+  missing from the end are months that have not recorded anything yet.
 
 ## Actions
 
 ### `boilerjuice.reset_consumption`
 
-Zeroes the consumption counters and history for the target, clears any manual
-daily override, and takes the current level as the new baseline.
+Zeroes the consumption counters for the target, clears any manual daily
+override, and takes the current level as the new baseline. The dated history
+behind the seasonal and monthly averages is kept.
 
 ```yaml
 action: boilerjuice.reset_consumption
 target:
   device_id: <your BoilerJuice tank>
+```
+
+Pass `clear_history: true` to delete the dated history as well. It takes a
+full year to rebuild, so reach for it only when the history itself is wrong,
+not to zero a counter.
+
+```yaml
+action: boilerjuice.reset_consumption
+target:
+  device_id: <your BoilerJuice tank>
+data:
+  clear_history: true
 ```
 
 A device or entity target resets that tank. Targeting the config entry resets
@@ -324,6 +347,21 @@ Home Assistant handles automatically on first start.
 If the Energy dashboard was configured against the removed sensor, point it
 at Total oil energy. Its historical statistics do not carry across.
 
+**`reset_consumption` no longer deletes the seasonal history.** It zeroes the
+counters and references and leaves the dated history alone, because the two
+answer different questions and the history takes a year to rebuild. Pass
+`clear_history: true` for the old behaviour. If you have an automation that
+resets the counter after each refill, it has been quietly costing you the
+seasonal averages until now.
+
+**Two repairs appear on the first start after upgrading.** Home Assistant
+raises one because **Height** no longer has a state class (it is a fixed
+number from your tank's configuration, so recording a statistic for it was
+recording a constant), and one because **Days until empty** now reports its
+unit as `d` rather than `days`. Take the offered action on both: delete the
+height statistics, and update the unit on days until empty if that option is
+offered so its history carries across. Neither comes back.
+
 **Other changes you will notice:**
 
 - Oil level is no longer a battery device class, so it leaves battery
@@ -347,8 +385,8 @@ at Total oil energy. Its historical statistics do not carry across.
 A failed scrape could be accepted as a valid reading: a page the parser did
 not understand became "0 litres, 0%", and the drop from the last good reading
 to that zero was recorded as real consumption. If your history contains an
-implausible spike, run `boilerjuice.reset_consumption` and re-seed with
-`boilerjuice.set_consumption`.
+implausible spike, run `boilerjuice.reset_consumption` with
+`clear_history: true` and re-seed with `boilerjuice.set_consumption`.
 
 ### To 1.3.1
 
@@ -393,8 +431,10 @@ Duplicate sensors were merged:
 If consumption looks wrong, for example after upgrading from a version that
 could record a phantom reading:
 
-1. Run `boilerjuice.reset_consumption` against the tank. That clears its
-   counters, history and references.
+1. Run `boilerjuice.reset_consumption` against the tank with
+   `clear_history: true`. That clears its counters, references and dated
+   history. Without the flag the history is kept, which is what you want if
+   only the running total is wrong.
 2. Optionally run `boilerjuice.set_consumption` with the total you believe is
    correct, so long-term statistics continue from the right place.
 3. Leave it a day. The daily rate reappears once a complete day has been

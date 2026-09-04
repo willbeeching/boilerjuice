@@ -822,9 +822,15 @@ async def test_removing_an_entry_deletes_its_document(
         await coordinator.async_close()
 
 
-async def test_reset_clears_the_stored_document(
+async def test_reset_clears_the_counters_and_keeps_the_history(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, hass_storage
 ) -> None:
+    """The counters and the seasonal history answer different questions.
+
+    Zeroing "how much since I last zeroed it" used to delete "what does
+    this tank burn in January" as well, so one reset in April cost the
+    whole of the preceding heating season.
+    """
     entry = make_entry(hass)
     coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
 
@@ -841,6 +847,29 @@ async def test_reset_clears_the_stored_document(
         document = stored(hass_storage, entry_key(entry))
         assert document["total_litres"] == 0.0
         assert document["reference_volume"] is None
+        assert document["history"] != []
+    finally:
+        await coordinator.async_close()
+
+
+async def test_reset_clears_the_stored_history_when_asked(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, hass_storage
+) -> None:
+    """History that is itself wrong still needs a way out."""
+    entry = make_entry(hass)
+    coordinator = BoilerJuiceDataUpdateCoordinator(hass, entry)
+
+    try:
+        mock_site(aioclient_mock, tank_html=tank_page(percentage=80, litres=2000))
+        await coordinator.async_refresh()
+        mock_site(aioclient_mock, tank_html=tank_page(percentage=70, litres=1750))
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+        await coordinator.async_reset_consumption(clear_history=True)
+
+        document = stored(hass_storage, entry_key(entry))
+        assert document["total_litres"] == 0.0
         assert document["history"] == []
     finally:
         await coordinator.async_close()

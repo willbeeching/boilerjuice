@@ -6,15 +6,26 @@
 reset_consumption:
   name: Reset consumption
   description: >-
-    Reset the consumption counters, history and references to zero, and clear
-    any manual daily consumption override. Targeting a tank resets that tank;
-    targeting the account resets every tank on it. With more than one
-    BoilerJuice account configured, a target is required, and it must name
+    Reset the consumption counters and references to zero, and clear any
+    manual daily consumption override. The dated history behind the seasonal
+    averages is kept unless you ask for it to go. Targeting a tank resets
+    that tank; targeting the account resets every tank on it. With more than
+    one BoilerJuice account configured, a target is required, and it must name
     one account: a target reaching two is refused rather than half-applied.
   target:
     entity:
       integration: boilerjuice
   fields:
+    clear_history:
+      name: Also clear the consumption history
+      description: >-
+        Deletes the per-day consumption history as well as the counters. The
+        seasonal and monthly averages are built from it and take a year to
+        rebuild, so leave this off unless the history itself is wrong.
+      required: false
+      default: false
+      selector:
+        boolean:
     entry_id:
       name: Config entry ID
       description: >-

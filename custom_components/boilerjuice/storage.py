@@ -115,9 +115,21 @@ class ConsumptionState:
             else self.daily_litres
         )
 
-    def cleared(self) -> ConsumptionState:
-        """Return a fresh state, as `reset_consumption` produces."""
-        return ConsumptionState()
+    def cleared(self, *, keep_history: bool = True) -> ConsumptionState:
+        """Return a fresh state, as `reset_consumption` produces.
+
+        The dated history survives by default. Zeroing the running total
+        answers "how much since I last zeroed it"; the history answers
+        "what does this tank burn in January". Clearing one used to clear
+        the other, so a single reset in April cost a whole heating
+        season's worth of seasonal averages.
+
+        `last_update` goes with the totals rather than the history. It
+        marks where the next detection interval starts, and leaving it
+        pointing at a pre-reset reading would allocate the next drop back
+        across days the reset just disowned.
+        """
+        return ConsumptionState(history=[] if not keep_history else list(self.history))
 
 
 def _number(value: Any, *, low: float, high: float) -> float:
