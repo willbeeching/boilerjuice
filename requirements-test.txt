@@ -1,0 +1,13 @@
+# Current Home Assistant lane. pytest-homeassistant-custom-component pins the
+# Home Assistant version the suite runs against, so pinning it exactly fixes
+# which Home Assistant the suite exercises. It does not pin the environment:
+# everything Home Assistant itself depends on still resolves afresh at
+# install time, which is how a green run and a red one can share this file.
+#
+# The annotations below are read by scripts/check_versions.py, which checks
+# them against the Python versions in the CI matrix. Bumping this pin without
+# them is how a lane ends up pinned to something nobody has ever run.
+# home-assistant: 2026.9.0
+# python: "3.14"
+pytest-homeassistant-custom-component==0.13.363
+beautifulsoup4==4.15.0

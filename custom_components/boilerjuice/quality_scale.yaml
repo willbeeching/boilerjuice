@@ -1,0 +1,264 @@
+# Integration Quality Scale tracking.
+#
+# https://developers.home-assistant.io/docs/core/integration-quality-scale/rules/
+#
+# The manifest previously claimed Silver with no tests, no reauthentication
+# and no runtime_data. That claim is withdrawn until every applicable rule is
+# demonstrably met; the manifest carries no quality_scale while any Bronze
+# rule below is still todo.
+#
+# status: done | exempt | todo
+#
+# Every applicable rule is now done or exempt. The manifest still declares no
+# quality_scale: the scale is awarded to core integrations through Home
+# Assistant's own review, and a custom integration claiming a tier is
+# asserting something nobody granted. This file states what the checklist
+# actually shows, which is the honest version of the same information.
+
+rules:
+  # --- Bronze ---
+  action-setup:
+    status: done
+    comment: >-
+      Actions are registered in async_setup and validated with voluptuous
+      schemas that name every target field and reject anything else, so a
+      misspelled target cannot read as no target and widen to the whole
+      account. They stay registered while any config entry exists, including
+      after the last entry unloads, so a target that cannot be resolved gets
+      a translated explanation instead of an unknown-service error. Devices,
+      entities, areas, floors and labels resolve to a specific account and
+      tank; an unresolvable target raises ServiceValidationError rather than
+      fanning out.
+  appropriate-polling:
+    status: done
+    comment: >-
+      Hourly. BoilerJuice tank readings update far less often than that, and
+      the site is scraped rather than served by an API.
+  brands:
+    status: done
+    comment: >-
+      icon.png, icon@2x.png, logo.png and logo@2x.png ship in
+      custom_components/boilerjuice/brand/, which is where Home Assistant
+      reads them from for a custom integration (loader.has_branding, served
+      by components/brands). That path landed in 2026.3, so on the older half
+      of the supported range - 2025.2 to 2026.2 - the images are present but
+      not displayed. Submitting them to home-assistant/brands would cover
+      that too, and is worth doing, but it is no longer what this rule asks
+      for.
+  common-modules:
+    status: done
+    comment: coordinator.py, client.py, parser.py, models.py, consumption.py.
+  config-flow-test-coverage:
+    status: done
+    comment: >-
+      tests/test_config_flow.py covers the user, import, reauth and
+      reconfigure steps and every error branch. config_flow.py is at 100%.
+  config-flow:
+    status: done
+    comment: >-
+      Every field in the user, reauth and reconfigure steps carries a
+      data_description, including the accepted range for the energy content.
+  dependency-transparency:
+    status: done
+    comment: >-
+      beautifulsoup4 is pinned exactly in the manifest. aiohttp is not
+      redeclared because Home Assistant Core guarantees it.
+  docs-actions:
+    status: done
+    comment: README documents both actions, including the persistence of the
+      manual daily override.
+  docs-conditions:
+    status: exempt
+    comment: >-
+      The integration contributes no conditions. Home Assistant's built-in
+      numeric-state and state conditions read these sensors directly.
+  docs-high-level-description:
+    status: done
+    comment: The README opens by naming and linking boilerjuice.com.
+  docs-installation-instructions:
+    status: done
+  docs-removal-instructions:
+    status: done
+  docs-triggers:
+    status: exempt
+    comment: >-
+      The integration contributes no triggers. Everything it publishes is a
+      sensor, and the built-in numeric-state and state triggers cover the
+      useful cases - see the automation examples in the README.
+  entity-event-setup:
+    status: exempt
+    comment: Polling integration; entities subscribe only to the coordinator.
+  entity-unique-id:
+    status: done
+    comment: >-
+      "<tank id>_<sensor key>". Stable keys replaced the old class-name ids,
+      with an entity-registry migration.
+  has-entity-name:
+    status: done
+  runtime-data:
+    status: done
+    comment: Typed BoilerJuiceRuntimeData on ConfigEntry.runtime_data.
+  test-before-configure:
+    status: done
+    comment: The config flow signs in and lists tanks before creating an entry.
+  test-before-setup:
+    status: done
+    comment: >-
+      async_config_entry_first_refresh raises ConfigEntryNotReady, or
+      ConfigEntryAuthFailed which starts a reauth flow.
+  unique-config-entry:
+    status: done
+    comment: Unique id is the normalised account email.
+
+  # --- Silver ---
+  action-exceptions:
+    status: done
+    comment: >-
+      A mistake in the call - a target that names no BoilerJuice tank, an
+      unknown device, entity or entry, a target spanning two accounts, an
+      ambiguous call with no target - raises ServiceValidationError. A
+      failure to carry the change out - no reading to rebase on, a storage
+      write that did not reach the disk - raises HomeAssistantError. Both
+      carry translation keys, and neither leaves a half-applied change:
+      every tank an action names is mutated, written and published under one
+      lock, and a failed write restores all of them and publishes nothing.
+  config-entry-unloading:
+    status: done
+  docs-configuration-parameters:
+    status: done
+  docs-installation-parameters:
+    status: done
+  entity-unavailable:
+    status: done
+    comment: >-
+      Health is tracked per tank, so a tank that fails goes unavailable on
+      its own instead of showing a stale reading while its siblings update.
+      Missing values are unknown, never zero.
+  integration-owner:
+    status: done
+  log-when-unavailable:
+    status: done
+    comment: >-
+      Logged on transition, per tank: a warning the first time a tank fails,
+      an info when it recovers, debug in between. Hourly polling against a
+      week-long outage writes one warning, not 168. The optional oil price
+      logs at debug so it cannot spam either.
+  parallel-updates:
+    status: done
+    comment: >-
+      PARALLEL_UPDATES = 0 on the sensor platform. Every value comes from the
+      coordinator's single fetch, so there is no per-entity request to
+      serialise.
+  reauthentication-flow:
+    status: done
+  test-coverage:
+    status: done
+    comment: >-
+      Above 95% for every module, enforced per module in CI rather than only
+      in total.
+
+  # --- Gold ---
+  devices:
+    status: done
+    comment: One device per tank, created dynamically from the account listing.
+  diagnostics:
+    status: done
+    comment: >-
+      Redacted by construction rather than by a redaction list: no email,
+      password, tank id, tank name, cookie, CSRF token or page HTML.
+  discovery-update-info:
+    status: exempt
+    comment: Cloud polling; there is nothing on the network to discover.
+  discovery:
+    status: exempt
+    comment: Cloud polling.
+  docs-data-update:
+    status: done
+  docs-examples:
+    status: todo
+    comment: >-
+      The README has working automation examples, but since August 2026 the
+      rule asks for a reusable blueprint published to the Blueprint Exchange
+      and linked from the documentation. That has not been done.
+  docs-known-limitations:
+    status: done
+    comment: >-
+      README documents scraper fragility, the estimate's limits and how long
+      seasonal averages take to fill.
+  docs-supported-devices:
+    status: done
+  docs-supported-functions:
+    status: done
+  docs-troubleshooting:
+    status: done
+  docs-use-cases:
+    status: done
+  dynamic-devices:
+    status: done
+    comment: >-
+      Tanks added to the account get entities without a restart, including
+      the first tank added after every earlier one was retired. Tanks are
+      removed only after three consecutive authoritative listings omit them,
+      via async_remove_device.
+  entity-category:
+    status: done
+  entity-device-class:
+    status: done
+    comment: >-
+      Oil level is no longer a battery. Volume, capacity, height, energy and
+      the timestamps carry appropriate device classes.
+  entity-disabled-by-default:
+    status: done
+    comment: >-
+      Considered and deliberately none. The rule exists for entities that are
+      noisy or expensive; every sensor here comes free with a fetch that
+      happens anyway, and the five least-used are already marked diagnostic,
+      which keeps them out of the main card without hiding them.
+  entity-translations:
+    status: done
+    comment: translation_key on every sensor, with translations/en.json.
+  exception-translations:
+    status: done
+    comment: >-
+      Every error raised at a user is a HomeAssistantError subclass with a
+      translation_key: the ServiceValidationError for a target that names a
+      device, entity or config entry this integration does not own or that
+      resolves to no tank, and the HomeAssistantError for a tank with no
+      reading to rebase on or a storage write that failed. A test asserts
+      the key exists in strings.json.
+  icon-translations:
+    status: done
+    comment: icons.json, keyed by translation key. A test keeps the two in step.
+  reconfiguration-flow:
+    status: done
+  repair-issues:
+    status: done
+    comment: >-
+      Raised for unusable stored history and for a persistent page-layout
+      change. Both clear themselves when the condition goes away.
+  stale-devices:
+    status: done
+    comment: >-
+      A tank the user excludes is removed at once; a tank BoilerJuice stops
+      listing is removed after three consecutive authoritative listings
+      agree, via async_remove_device. Either way it is retired rather than
+      erased: the device goes, the history stays, and it resumes if the tank
+      returns. A listing page we do not recognise is refused outright rather
+      than read as "no tanks", and an empty-account message has to be the
+      whole of a block element rather than a phrase found inside one.
+
+  # --- Platinum ---
+  async-dependency:
+    status: done
+    comment: aiohttp throughout; Beautiful Soup parsing is CPU-only.
+  inject-websession:
+    status: done
+    comment: >-
+      The coordinator injects a Home Assistant-created session into the
+      client. It is a per-account session with its own cookie jar, because a
+      shared jar made two accounts overwrite each other's login.
+  strict-typing:
+    status: done
+    comment: >-
+      mypy --strict passes over the integration in CI, with two seams
+      relaxed for Home Assistant's own annotations (see pyproject.toml).

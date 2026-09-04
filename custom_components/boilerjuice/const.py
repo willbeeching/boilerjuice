@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
-
 DOMAIN = "boilerjuice"
 NAME = "BoilerJuice"
 
@@ -12,15 +10,34 @@ CONF_EMAIL = "email"
 CONF_PASSWORD = "password"
 CONF_TANK_ID = "tank_id"
 CONF_KWH_PER_LITRE = "kwh_per_litre"
+CONF_TANKS = "tanks"
 
 # Default Values
 DEFAULT_KWH_PER_LITRE = 10.35  # typical value for heating oil
+
+# What a litre of any real liquid fuel could hold. Enforced by the config
+# flow and again at runtime, because a version-one entry could hold anything
+# a float can express. The ceiling is also what keeps the stored energy total
+# inside what the storage reader will accept: the largest storable litre
+# figure is 10,000,000 and the reader's kWh bound is a hundred times that, so
+# a factor above 100 could write a total that the next start refused, taking
+# the account's history with it.
+MIN_KWH_PER_LITRE = 0.1
+MAX_KWH_PER_LITRE = 100.0
+
+# Which config entry owns each tank, keyed by tank id. Entity unique ids are
+# keyed by tank id alone, so two accounts listing the same tank would collide
+# on every entity and keep two separate histories for one physical tank. The
+# claim is taken synchronously, which is what makes it safe when two entries
+# set up at once.
+TANK_CLAIMS = f"{DOMAIN}_tank_claims"
 
 # URLs
 BASE_URL = "https://www.boilerjuice.com/uk"
 LOGIN_URL = f"{BASE_URL}/users/login"
 TANKS_URL = f"{BASE_URL}/users/tanks"
 ACCOUNT_URL = f"{BASE_URL}/users/account"
+PRICE_URL = "https://www.boilerjuice.com/kerosene-prices/"
 
 # Defaults
 DEFAULT_SCAN_INTERVAL = 300  # 5 minutes

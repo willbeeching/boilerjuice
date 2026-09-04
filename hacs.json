@@ -2,6 +2,8 @@
     "name": "BoilerJuice",
     "content_in_root": false,
     "render_readme": true,
-    "country": ["GB"],
-    "homeassistant": "2024.1.0"
+    "country": [
+        "GB"
+    ],
+    "homeassistant": "2025.2.5"
 }

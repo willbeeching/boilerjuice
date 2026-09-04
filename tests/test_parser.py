@@ -1,0 +1,478 @@
+"""Parsing must never turn an unreadable page into a plausible reading.
+
+Every case here is a page BoilerJuice could realistically serve: a redesign,
+a session that expired mid-poll, a response cut short by a proxy. The old
+parser answered all of them with "0 litres, 0%", which the consumption engine
+then recorded as the whole tank being burnt in one hour.
+"""
+
+from __future__ import annotations
+
+import pytest
+from custom_components.boilerjuice.errors import (
+    BoilerJuiceAuthError,
+    BoilerJuiceParseError,
+)
+from custom_components.boilerjuice.parser import (
+    looks_like_login_page,
+    parse_tank_ids,
+    parse_tank_page,
+    validate_tank_id,
+)
+
+from .helpers import load_fixture
+
+
+def test_parses_the_current_page_layout() -> None:
+    reading = parse_tank_page(load_fixture("tank_current.html"), "123456")
+
+    assert reading.tank_id == "123456"
+    assert reading.level_percentage == 62.5
+    assert reading.level_percentage == 62.5
+    assert reading.volume_litres == 1562
+    assert reading.volume_litres == 1562
+    assert reading.capacity_litres == 2500
+    assert reading.height_cm == 120
+    assert reading.name == "Garden Tank"
+    assert reading.manufacturer == "Harlequin"
+    assert reading.model == "H2500T"
+    assert reading.shape == "Horizontal Cylinder"
+    assert reading.oil_type == "Kerosene"
+
+
+def test_parses_the_legacy_page_layout() -> None:
+    reading = parse_tank_page(load_fixture("tank_legacy.html"), "123456")
+
+    assert reading.level_percentage == 40
+    assert reading.volume_litres == 1000
+    assert reading.capacity_litres == 2500
+    assert reading.height_cm == 120
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    ["tank_truncated.html", "tank_redesigned.html"],
+)
+def test_unreadable_pages_raise_rather_than_reading_zero(fixture: str) -> None:
+    with pytest.raises(BoilerJuiceParseError):
+        parse_tank_page(load_fixture(fixture), "123456")
+
+
+def test_empty_body_raises() -> None:
+    with pytest.raises(BoilerJuiceParseError):
+        parse_tank_page("", "123456")
+
+
+def test_login_page_raises_auth_rather_than_parse_error() -> None:
+    with pytest.raises(BoilerJuiceAuthError):
+        parse_tank_page(load_fixture("login.html"), "123456")
+
+
+def test_partial_page_keeps_the_level_and_omits_the_volume() -> None:
+    """A level with no volume is a usable reading; the volume must stay absent.
+
+    Zero-filling the missing volume is what booked a whole tank of phantom
+    consumption on the next poll.
+    """
+    reading = parse_tank_page(load_fixture("tank_partial.html"), "123456")
+
+    assert reading.level_percentage == 55
+    assert reading.volume_litres is None
+    assert reading.volume_litres is None
+    assert reading.capacity_litres is None
+
+
+def test_non_numeric_tank_id_is_refused() -> None:
+    with pytest.raises(BoilerJuiceParseError):
+        parse_tank_page(load_fixture("tank_current.html"), "../../admin")
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("123456", "123456"),
+        (" 123456 ", "123456"),
+        (123456, "123456"),
+        ("12345a", None),
+        ("../123", None),
+        ("", None),
+        (None, None),
+        ("1234567890123", None),
+    ],
+)
+def test_validate_tank_id(raw: object, expected: str | None) -> None:
+    assert validate_tank_id(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("fixture", "expected"),
+    [
+        ("login.html", True),
+        ("tank_current.html", False),
+        ("tanks_list.html", False),
+    ],
+)
+def test_looks_like_login_page(fixture: str, expected: bool) -> None:
+    assert looks_like_login_page(load_fixture(fixture)) is expected
+
+
+def test_parse_tank_ids_deduplicates_and_preserves_order() -> None:
+    assert parse_tank_ids(load_fixture("tanks_list_multiple.html")) == [
+        "123456",
+        "789012",
+    ]
+
+
+def test_parse_tank_ids_on_an_account_with_no_tanks() -> None:
+    assert parse_tank_ids(load_fixture("tanks_list_empty.html")) == []
+
+
+@pytest.mark.parametrize(
+    "percentage",
+    ["nan", "inf", "-inf", "-1", "101", "", "not-a-number"],
+)
+def test_out_of_range_percentages_are_dropped(percentage: str) -> None:
+    """An out-of-range level must be absent, not clamped or zeroed."""
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="'
+        + percentage
+        + '"></div></div><p>900 litres of oil</p>'
+    )
+    reading = parse_tank_page(html, "123456")
+
+    assert reading.level_percentage is None
+    assert reading.volume_litres == 900
+
+
+@pytest.mark.parametrize("capacity", ["0", "-500", "999999999", "nan", "abc"])
+def test_out_of_range_capacities_are_dropped(capacity: str) -> None:
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        '<input id="tank_size" value="' + capacity + '">'
+    )
+    reading = parse_tank_page(html, "123456")
+
+    assert reading.capacity_litres is None
+    assert reading.level_percentage == 50
+
+
+def test_a_tank_with_no_model_json_still_parses() -> None:
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        '<input id="tankModelInput" value="42">'
+    )
+    reading = parse_tank_page(html, "123456")
+
+    assert reading.model_id == "42"
+    assert reading.model is None
+
+
+def test_malformed_model_json_does_not_fail_the_reading() -> None:
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        '<input id="tankModelInput" value="42">'
+        "<script>var jsonData = [{oops;</script>"
+    )
+    reading = parse_tank_page(html, "123456")
+
+    assert reading.level_percentage == 50
+    assert reading.model is None
+
+
+def test_an_unclosed_model_json_array_does_not_fail_the_reading() -> None:
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        '<input id="tankModelInput" value="42">'
+        '<script>var jsonData = [{"id": 42, "tank": {"Brand": "Titan"}}</script>'
+    )
+    reading = parse_tank_page(html, "123456")
+
+    assert reading.model is None
+
+
+def test_a_model_id_absent_from_the_json_leaves_the_model_unset() -> None:
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        '<input id="tankModelInput" value="99">'
+        '<script>var jsonData = [{"id": 42, "tank": {"Brand": "Titan",'
+        ' "Description": "ES2500"}}];</script>'
+    )
+    reading = parse_tank_page(html, "123456")
+
+    assert reading.model_id == "99"
+    assert reading.model is None
+
+
+def test_nested_arrays_in_the_model_json_are_walked_correctly() -> None:
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        '<input id="tankModelInput" value="42">'
+        '<script>var jsonData = [{"id": 41, "sizes": [1, 2, 3]},'
+        ' {"id": 42, "tank": {"Brand": "Titan", "Description": "ES2500"}}];</script>'
+    )
+    reading = parse_tank_page(html, "123456")
+
+    assert reading.manufacturer == "Titan"
+    assert reading.model == "ES2500"
+
+
+def test_a_volume_mentioned_without_the_oil_keyword_is_not_read() -> None:
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        "<p>Your last delivery was 900 litres.</p>"
+    )
+    reading = parse_tank_page(html, "123456")
+
+    assert reading.volume_litres is None
+
+
+def test_an_out_of_range_height_is_dropped() -> None:
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        '<input id="internal_height" value="99999">'
+    )
+    reading = parse_tank_page(html, "123456")
+
+    assert reading.height_cm is None
+
+
+def test_an_empty_account_is_recognised_by_its_empty_state() -> None:
+    assert parse_tank_ids(load_fixture("tanks_list_empty.html")) == []
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        pytest.param("<p>You have no tanks yet.</p>", id="no-tanks"),
+        pytest.param("<p>You have not added a tank yet.</p>", id="not-added-a-tank"),
+        pytest.param("<p>You haven't added any tanks.</p>", id="havent-added-any"),
+        pytest.param("<p>You don't have any tanks.</p>", id="dont-have-any"),
+        pytest.param(
+            '<a href="/uk/users/tanks/new">Add your first tank</a>', id="first-tank"
+        ),
+    ],
+)
+def test_an_explicitly_empty_account_returns_no_tanks(html: str) -> None:
+    """Only a statement that there are no tanks counts as one."""
+    assert parse_tank_ids(html) == []
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        pytest.param(
+            "<h1>Your tanks</h1>"
+            '<div class="tank-card" data-tank="123456"><h2>Garden Tank</h2>'
+            "<span>62%</span></div>"
+            '<a href="/uk/users/tanks/new">Add another tank</a>',
+            id="populated-but-redesigned",
+        ),
+        pytest.param(
+            '<a href="/uk/users/tanks/new">Add a tank</a>', id="add-link-alone"
+        ),
+        pytest.param(
+            '<button data-action="tanks#add">Add tank</button>', id="add-button"
+        ),
+    ],
+)
+def test_an_invitation_to_add_a_tank_is_not_proof_of_an_empty_account(
+    html: str,
+) -> None:
+    """An add-tank control sits happily on a populated page.
+
+    Accepting the add-tank control meant a populated account whose tank
+    markup had changed parsed as empty, and its devices were retired after
+    three polls without the layout repair ever being raised.
+    """
+    with pytest.raises(BoilerJuiceParseError):
+        parse_tank_ids(html)
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        pytest.param("", id="empty"),
+        pytest.param(
+            "<html><body><h1>Your account</h1></body></html>", id="redesigned"
+        ),
+        pytest.param(
+            "<html><body><div id='tanks-app'></div></body></html>", id="js-only"
+        ),
+        pytest.param(
+            "<html><body><p>Something went wrong.</p></body></html>", id="error-page"
+        ),
+    ],
+)
+def test_an_unrecognised_listing_is_not_proof_that_the_tanks_are_gone(
+    html: str,
+) -> None:
+    """The same mistake the tank page used to make, one page earlier.
+
+    An empty list is acted on: the coordinator removes devices after three
+    of them. "We no longer understand this page" must not be able to say
+    that.
+    """
+    with pytest.raises(BoilerJuiceParseError):
+        parse_tank_ids(html)
+
+
+@pytest.mark.parametrize(
+    "status_line",
+    [
+        pytest.param("No tanks need a delivery today", id="delivery"),
+        pytest.param("No tanks need filling this week", id="filling"),
+        pytest.param("No tanks require attention", id="attention"),
+        pytest.param("Good news: no tanks need topping up", id="topping-up"),
+        pytest.param("No tanks are low", id="low"),
+    ],
+)
+def test_a_status_line_mentioning_tanks_is_not_an_empty_account(
+    status_line: str,
+) -> None:
+    """A bare "no tanks" described the very tanks it would have retired.
+
+    A footer reading "No tanks need a delivery today" sits on a populated
+    page. Searching the whole page for the phrase accepted it as proof the
+    account was empty; the message has to match in full.
+    """
+    html = (
+        "<html><body><h1>Your tanks</h1>"
+        '<div class="card" data-tank="123456">Garden Tank</div>'
+        f"<footer>{status_line}</footer></body></html>"
+    )
+
+    with pytest.raises(BoilerJuiceParseError):
+        parse_tank_ids(html)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        pytest.param("You have no tanks yet.", id="have-no-tanks"),
+        pytest.param("There are no tanks.", id="there-are-none"),
+        pytest.param("No tanks added", id="none-added"),
+        pytest.param("You have not added a tank yet.", id="not-added"),
+        pytest.param("You haven’t added any tanks", id="curly-apostrophe"),  # noqa: RUF001
+        pytest.param("You don’t have any tanks", id="dont-have-any"),  # noqa: RUF001
+        pytest.param("— No tanks —", id="decorated"),
+    ],
+)
+def test_a_complete_empty_account_message_is_accepted(message: str) -> None:
+    assert parse_tank_ids(f"<html><body><p>{message}</p></body></html>") == []
+
+
+@pytest.mark.parametrize(
+    "status_line",
+    [
+        pytest.param(
+            "<strong>No tanks</strong> need a delivery today", id="strong-prefix"
+        ),
+        pytest.param(
+            "<span>No tanks</span> require <em>attention</em>", id="span-and-em"
+        ),
+        pytest.param(
+            "Good news: <b>no tanks</b> need topping up", id="bold-mid-sentence"
+        ),
+        pytest.param(
+            'No <a href="/uk/help/levels">tanks</a> are low', id="linked-word"
+        ),
+    ],
+)
+def test_inline_markup_does_not_split_a_status_line_into_an_empty_state(
+    status_line: str,
+) -> None:
+    """Half a sentence is not a statement about the account.
+
+    Matching text nodes one at a time offered "No tanks" on its own the
+    moment two words of the sentence were wrapped in <strong>, which is the
+    same false empty account by a different route. The block element holding
+    the sentence is what has to match.
+    """
+    html = (
+        "<html><body><h1>Your tanks</h1>"
+        '<div class="card" data-tank="123456">Garden Tank</div>'
+        f"<footer><p>{status_line}</p></footer></body></html>"
+    )
+
+    with pytest.raises(BoilerJuiceParseError):
+        parse_tank_ids(html)
+
+
+def test_an_empty_state_carrying_inline_markup_is_still_recognised() -> None:
+    """Emphasis inside the message must not stop it being read."""
+    html = (
+        "<html><body><h1>Your tanks</h1>"
+        "<div class='empty'><p>You have <strong>no tanks</strong> yet.</p>"
+        '<a href="/uk/users/tanks/new">Add your first tank</a></div>'
+        "</body></html>"
+    )
+
+    assert parse_tank_ids(html) == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param('{"id": 42}', id="object-not-a-list"),
+        pytest.param('"Titan"', id="a-bare-string"),
+        pytest.param("42", id="a-bare-number"),
+        pytest.param('["just a string"]', id="entry-is-a-string"),
+        pytest.param("[[1, 2, 3]]", id="entry-is-a-list"),
+        pytest.param('[{"id": 42, "tank": null}]', id="tank-is-null"),
+        pytest.param('[{"id": 42, "tank": "Titan"}]', id="tank-is-a-string"),
+        pytest.param('[{"id": 42, "tank": {"Brand": {"en": "Titan"}}}]', id="nested"),
+        pytest.param('[{"id": 42, "tank": {"Brand": 7}}]', id="a-number-for-a-name"),
+        pytest.param('[{"id": 42, "tank": {"Brand": "   "}}]', id="blank"),
+    ],
+)
+def test_malformed_model_json_costs_the_model_and_nothing_else(payload: str) -> None:
+    """The model blob is optional decoration; the level is the reading.
+
+    Walking it on trust raised AttributeError out of the parser, so a tank
+    whose model JSON changed shape lost its level, its volume and everything
+    else with it.
+    """
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        "<p>900 litres of oil</p>"
+        '<input id="tankModelInput" value="42">'
+        f"<script>var jsonData = {payload};</script>"
+    )
+
+    reading = parse_tank_page(html, "123456")
+
+    assert reading.level_percentage == 50
+    assert reading.volume_litres == 900
+    assert reading.model_id == "42"
+    assert reading.model is None
+    assert reading.manufacturer is None
+
+
+def test_a_well_formed_model_entry_is_still_read() -> None:
+    """The check must not throw the good case out with the bad."""
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        '<input id="tankModelInput" value="42">'
+        '<script>var jsonData = [{"id": 41, "tank": {"Brand": "Other"}},'
+        ' {"id": 42, "tank": {"Brand": "Titan", "Description": "ES2500"}}];</script>'
+    )
+
+    reading = parse_tank_page(html, "123456")
+
+    assert reading.manufacturer == "Titan"
+    assert reading.model == "ES2500"
+
+
+def test_a_malformed_entry_does_not_hide_a_good_one_after_it() -> None:
+    """One bad entry in the list is skipped, not treated as the end of it."""
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        '<input id="tankModelInput" value="42">'
+        '<script>var jsonData = ["rubbish", 7, null,'
+        ' {"id": 42, "tank": {"Brand": "Titan", "Description": "ES2500"}}];</script>'
+    )
+
+    reading = parse_tank_page(html, "123456")
+
+    assert reading.manufacturer == "Titan"
+    assert reading.model == "ES2500"

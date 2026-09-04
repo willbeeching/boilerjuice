@@ -1,0 +1,34 @@
+version: 2
+updates:
+  # Keeps the SHA-pinned actions moving. Without this, pinning to a SHA means
+  # pinning to a version that never gets a security fix.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps"
+    groups:
+      # The Home Assistant test lanes are deliberately separate: the minimum
+      # lane pins the floor and must only move when the floor does.
+      linters:
+        patterns:
+          - ruff
+          - mypy
+          - actionlint-py
+          - pip-audit
+    ignore:
+      # Bumping this silently raises the minimum supported Home Assistant
+      # version. It moves by hand, with hacs.json, in the same commit.
+      - dependency-name: pytest-homeassistant-custom-component
+        versions: ["*"]

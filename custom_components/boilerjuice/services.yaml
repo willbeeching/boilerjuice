@@ -1,33 +1,42 @@
+# Entity filter only on every target. A service target does not take a device
+# filter - hassfest rejects one - and it does not need to: the picker offers
+# the devices and areas holding these entities, and Home Assistant still
+# passes device_id, area_id, floor_id and label_id through in the call.
+
 reset_consumption:
-  name: Reset Consumption
+  name: Reset consumption
   description: >-
-    Reset the consumption counters to zero. If no target is provided the
-    service is applied to every configured BoilerJuice account.
+    Reset the consumption counters, history and references to zero, and clear
+    any manual daily consumption override. Targeting a tank resets that tank;
+    targeting the account resets every tank on it. With more than one
+    BoilerJuice account configured, a target is required, and it must name
+    one account: a target reaching two is refused rather than half-applied.
+  target:
+    entity:
+      integration: boilerjuice
   fields:
-    device_id:
-      name: Device
-      description: Optional BoilerJuice tank device to target.
-      required: false
-      selector:
-        device:
-          integration: boilerjuice
     entry_id:
       name: Config entry ID
-      description: Optional config entry ID to target a specific account.
+      description: >-
+        Optional. Targets a whole BoilerJuice account rather than one tank.
       required: false
       example: 01HZ...abcd
       selector:
         text:
 
 set_consumption:
-  name: Set Consumption
+  name: Set consumption
   description: >-
-    Manually set the consumption values for the oil tank. If no target is
-    provided the service is applied to every configured BoilerJuice account.
+    Manually set the consumption values for a tank. With more than one
+    BoilerJuice account configured, a target is required, and it must name
+    one account: a target reaching two is refused rather than half-applied.
+  target:
+    entity:
+      integration: boilerjuice
   fields:
     liters:
-      name: Total Consumption
-      description: The total consumption in liters.
+      name: Total consumption
+      description: The total consumption in litres.
       required: true
       example: 100.5
       selector:
@@ -37,8 +46,11 @@ set_consumption:
           unit_of_measurement: "L"
           mode: box
     daily:
-      name: Daily Consumption
-      description: The daily consumption in liters.
+      name: Daily consumption
+      description: >-
+        Optional daily consumption override in litres per day. It replaces the
+        measured rate and persists across updates and restarts until you run
+        "Reset consumption".
       required: false
       example: 5.2
       selector:
@@ -47,16 +59,10 @@ set_consumption:
           step: 0.1
           unit_of_measurement: "L/day"
           mode: box
-    device_id:
-      name: Device
-      description: Optional BoilerJuice tank device to target.
-      required: false
-      selector:
-        device:
-          integration: boilerjuice
     entry_id:
       name: Config entry ID
-      description: Optional config entry ID to target a specific account.
+      description: >-
+        Optional. Targets a whole BoilerJuice account rather than one tank.
       required: false
       example: 01HZ...abcd
       selector:

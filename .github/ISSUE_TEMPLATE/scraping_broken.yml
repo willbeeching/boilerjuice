@@ -1,0 +1,43 @@
+name: Readings have stopped
+description: BoilerJuice changed its website and the integration cannot read it
+labels: ["bug", "scraping"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the failure mode that comes with scraping a site that has no
+        public API. Consumption history is not lost when this happens: the
+        integration refuses to record a reading it could not parse.
+
+        Please do not attach the page HTML. It contains your account details.
+        Describe what you can see on the BoilerJuice website instead.
+  - type: input
+    id: integration-version
+    attributes:
+      label: Integration version
+    validations:
+      required: true
+  - type: textarea
+    id: repair
+    attributes:
+      label: Repair notification
+      description: >-
+        Is there a "BoilerJuice has changed its website" repair under
+        Settings, and what does it say?
+  - type: textarea
+    id: site
+    attributes:
+      label: What the BoilerJuice tank page shows now
+      description: >-
+        Does it still show a percentage? A litre figure? A tank size? Which
+        of them have moved or gone?
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: >-
+        The parsed_fields section says exactly which fields stopped being
+        found, and contains no account details.
+      render: json

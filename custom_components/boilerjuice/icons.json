@@ -1,0 +1,30 @@
+{
+  "entity": {
+    "sensor": {
+      "oil_level": {
+        "default": "mdi:storage-tank"
+      },
+      "daily_consumption": {
+        "default": "mdi:gauge"
+      },
+      "days_until_empty": {
+        "default": "mdi:calendar-clock"
+      },
+      "energy_content": {
+        "default": "mdi:flash"
+      },
+      "cost_per_kwh": {
+        "default": "mdi:currency-gbp"
+      },
+      "oil_price": {
+        "default": "mdi:currency-gbp"
+      },
+      "seasonal_consumption": {
+        "default": "mdi:weather-partly-cloudy"
+      },
+      "heating_season": {
+        "default": "mdi:sun-snowflake-variant"
+      }
+    }
+  }
+}

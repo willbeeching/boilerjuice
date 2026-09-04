@@ -1,0 +1,15 @@
+# Linting and type checking. Kept separate from the test lanes so a Home
+# Assistant version bump cannot drag the linters with it.
+#
+# actionlint is not here: it is a Go binary, downloaded by digest in CI (see
+# .github/workflows/ci.yaml) rather than built from an sdist that needs a Go
+# toolchain.
+ruff==0.16.6
+mypy==2.3.1
+pip-audit==2.9.0
+# Read by scripts/check_versions.py. Deliberately a floor rather than an
+# exact pin: the lint job installs this file alongside the current test
+# lane, and Home Assistant pins PyYAML exactly, so an exact pin here becomes
+# an unsatisfiable resolution the day Home Assistant moves. A test asserts
+# nothing in this file collides with Home Assistant's own pins.
+PyYAML>=6.0.2,<7

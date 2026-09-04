@@ -5,86 +5,194 @@ on:
     tags:
       - "v*.*.*"
 
+# The publish job needs to create a release; nothing else needs write access.
+permissions:
+  contents: read
+
 jobs:
-  release:
-    name: Create Release
+  validate:
+    name: Validate the tagged commit
+    # A release must not be able to publish something CI has never seen. This
+    # runs the whole of CI against the exact commit the tag points at.
+    uses: ./.github/workflows/ci.yaml
+
+  package:
+    name: Build and inspect the archive
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
+      digest: ${{ steps.digest.outputs.SHA256 }}
+      prerelease: ${{ steps.gate.outputs.PRERELEASE }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Read and validate the tag
+        id: version
+        # The ref reaches the shell through the environment, never through
+        # template interpolation, so its contents cannot become shell syntax.
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          version="${REF#refs/tags/}"
+          if ! printf '%s' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Tag '$version' is not vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check the tag matches the manifest and the HACS floor
+        id: gate
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: python scripts/check_versions.py "$VERSION"
+
+      - name: Build the archive
+        run: |
+          set -euo pipefail
+          cd custom_components
+          zip -r ../boilerjuice.zip boilerjuice -x '*.pyc' -x '*__pycache__*'
+
+      - name: Inspect the archive
+        # An archive that is missing a module, or carrying something it should
+        # not, installs broken. Check before anything is published.
+        run: python scripts/check_archive.py boilerjuice.zip
+
+      - name: Record the digest
+        id: digest
+        run: |
+          set -euo pipefail
+          echo "SHA256=$(sha256sum boilerjuice.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Keep the archive for the release job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: boilerjuice-zip
+          path: boilerjuice.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    needs: package
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - name: Get version from tag
-        id: get_version
-        run: |
-          VERSION=${GITHUB_REF#refs/tags/}
-          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-          echo "VERSION_NUMBER=${VERSION#v}" >> $GITHUB_OUTPUT
+      - name: Download the archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: boilerjuice-zip
 
-      - name: Get previous tag
-        id: prev_tag
+      - name: Refuse to overwrite an existing release
+        # action-gh-release updates a release that already exists, archive
+        # and all. A rerun of this workflow, or a tag moved onto a different
+        # commit, would therefore replace what people have already
+        # downloaded, and the published sha256 with it. A release is a
+        # promise about one specific archive, so publishing over one is
+        # refused here rather than trusted not to happen.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          VERSION: ${{ needs.package.outputs.version }}
         run: |
-          PREV_TAG=$(git describe --abbrev=0 --tags $(git rev-list --tags --skip=1 --max-count=1) 2>/dev/null || echo "")
-          echo "PREV_TAG=$PREV_TAG" >> $GITHUB_OUTPUT
-
-      - name: Generate changelog
-        id: changelog
-        run: |
-          if [ -n "${{ steps.prev_tag.outputs.PREV_TAG }}" ]; then
-            echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
-            git log --pretty=format:"- %s" ${{ steps.prev_tag.outputs.PREV_TAG }}..${{ steps.get_version.outputs.VERSION }} >> $GITHUB_OUTPUT
-            echo "" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
-          else
-            echo "CHANGELOG=Initial release" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          # Fails closed. A non-zero exit from the API means "no release" only
+          # when it is a 404; a token problem, a rate limit or an outage looks
+          # the same to `gh release view`, and treating those as "no release"
+          # would publish over one on exactly the days things are going wrong.
+          if response=$(gh api "repos/${REPOSITORY}/releases/tags/${VERSION}" 2>&1); then
+            echo "::error::Release ${VERSION} already exists."
+            echo "Publishing would replace its archive and its published"
+            echo "digest. Delete the release deliberately, or tag a new"
+            echo "version."
+            exit 1
           fi
+          if ! printf '%s' "$response" | grep -q "(HTTP 404)"; then
+            echo "::error::Could not tell whether ${VERSION} already has a release."
+            echo "Refusing to publish rather than risk replacing one."
+            printf '%s\n' "$response"
+            exit 1
+          fi
+          echo "No release exists for ${VERSION}; safe to publish."
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ steps.get_version.outputs.VERSION }}
-          name: "BoilerJuice ${{ steps.get_version.outputs.VERSION_NUMBER }}"
-          body: |
-            ## 📋 Changes in this Release
-
-            ${{ steps.changelog.outputs.CHANGELOG }}
-
-            ## 📦 Installation
-
-            ### HACS (Recommended)
-            1. Open HACS in Home Assistant
-            2. Go to **Integrations**
-            3. Click the three dots (⋮) in the top right
-            4. Select **Custom repositories**
-            5. Add this repository URL: `https://github.com/willbeeching/boilerjuice`
-            6. Select **Integration** as category
-            7. Click **Add**
-            8. Find **BoilerJuice** and click **Download**
-            9. Restart Home Assistant
-
-            ### Manual Installation
-            1. Download `boilerjuice.zip` from the assets below
-            2. Extract to your Home Assistant `config/custom_components/` directory
-            3. Restart Home Assistant
-            4. Add the integration via **Settings** → **Devices & Services** → **Add Integration**
-
-            ---
-
-            **Full Changelog**: https://github.com/${{ github.repository }}/compare/${{ steps.prev_tag.outputs.PREV_TAG }}...${{ steps.get_version.outputs.VERSION }}
-          draft: false
-          prerelease: false
-
-      - name: Create ZIP archive
+      - name: Write the release notes
+        # Written to a file rather than a workflow output: a commit subject
+        # containing the heredoc delimiter, or a line looking like a workflow
+        # command, cannot break out of a file.
+        env:
+          VERSION: ${{ needs.package.outputs.version }}
+          DIGEST: ${{ needs.package.outputs.digest }}
+          COMMIT: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          cd custom_components
-          zip -r ../boilerjuice.zip boilerjuice/
+          set -euo pipefail
+          previous="$(git describe --abbrev=0 --tags "${VERSION}^" 2>/dev/null || true)"
 
-      - name: Upload ZIP to release
-        uses: softprops/action-gh-release@v1
+          {
+            echo "## Changes"
+            echo
+            if [ -n "$previous" ]; then
+              git log --pretty=format:'- %s' "${previous}..${VERSION}"
+              echo
+            else
+              echo "- Initial release"
+            fi
+            echo
+            echo "## Installation"
+            echo
+            echo "### HACS"
+            echo
+            echo "Add \`https://github.com/${REPOSITORY}\` as a custom repository"
+            echo "with category Integration, download BoilerJuice, then restart"
+            echo "Home Assistant."
+            echo
+            echo "### Manual"
+            echo
+            echo "Download \`boilerjuice.zip\` below, extract it into"
+            echo "\`config/custom_components/\`, and restart Home Assistant."
+            echo
+            echo "## Verifying the download"
+            echo
+            echo '```'
+            echo "sha256sum boilerjuice.zip"
+            echo "$DIGEST"
+            echo '```'
+            echo
+            echo "Built from ${COMMIT}, which passed the full CI suite (lint,"
+            echo "strict typing, both supported Home Assistant versions, hassfest"
+            echo "and HACS validation) before publication."
+            if [ -n "$previous" ]; then
+              echo
+              echo "**Full changelog**: https://github.com/${REPOSITORY}/compare/${previous}...${VERSION}"
+            fi
+          } > release-notes.md
+
+          cat release-notes.md
+
+      - name: Create the release with its archive
+        # One call, so the release and its asset appear together rather than
+        # the release existing for a while with nothing attached to it.
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          tag_name: ${{ steps.get_version.outputs.VERSION }}
+          tag_name: ${{ needs.package.outputs.version }}
+          name: BoilerJuice ${{ needs.package.outputs.version }}
           files: boilerjuice.zip
-
+          body_path: release-notes.md
+          draft: false
+          # Decided by the version, not by hand: a manifest that says
+          # -beta.1 publishes as a pre-release, so HACS offers it only to
+          # people who have asked for betas.
+          prerelease: ${{ needs.package.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.package.outputs.prerelease != 'true' }}

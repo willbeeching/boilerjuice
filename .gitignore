@@ -53,3 +53,7 @@ htmlcov/
 .tox/
 coverage.xml
 *.cover
+# Local dev virtualenv
+.venv/
+.venv-*/
+coverage.json
