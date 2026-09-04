@@ -340,7 +340,12 @@ def account_from_document(document: Any) -> AccountState:
         raise InvalidStoredData("legacy_slot must be a string")
 
     legacy_digest = document.get("legacy_digest")
-    if legacy_digest is not None and not _DIGEST_RE.fullmatch(str(legacy_digest)):
+    if legacy_digest is not None and (
+        # Checked, not coerced. str() on the way in accepts whatever the
+        # document happens to hold and stores it as the digest, so the field
+        # would no longer be the string the rest of the module compares.
+        not isinstance(legacy_digest, str) or not _DIGEST_RE.fullmatch(legacy_digest)
+    ):
         raise InvalidStoredData("legacy_digest must be a sha256 hex digest")
 
     return AccountState(

@@ -233,6 +233,49 @@ async def test_a_restart_resumes_from_the_stored_totals(
 # --- migration from the shared v1 document --------------------------------
 
 
+@pytest.mark.parametrize(
+    "digest",
+    [
+        pytest.param(0, id="a-number"),
+        pytest.param(True, id="a-bool"),
+        pytest.param(["0" * 64], id="a-list"),
+        pytest.param({"digest": "0" * 64}, id="an-object"),
+        pytest.param("0" * 63, id="too-short"),
+        pytest.param("Z" * 64, id="not-hexadecimal"),
+        # The one that got through: a JSON number of 64 decimal digits
+        # stringifies to something the pattern accepts, and was then stored
+        # as an int in a field annotated str.
+        pytest.param(int("1" * 64), id="a-number-that-looks-like-a-digest"),
+    ],
+)
+async def test_a_migration_digest_that_is_not_a_digest_is_refused(
+    hass: HomeAssistant, hass_storage, digest: object
+) -> None:
+    """Checked, not coerced.
+
+    str() on the way in accepts whatever the document holds, so the field
+    stopped being the string every comparison downstream assumes.
+    """
+    entry = make_entry(hass, tank_id=None)
+    store = ConsumptionStore(hass, entry.entry_id, None)
+    hass_storage[store.key] = {
+        "version": STORAGE_VERSION,
+        "data": {
+            "tanks": {},
+            "missing": {},
+            "retired": [],
+            "unassigned": None,
+            "legacy_slot": entry.entry_id,
+            "legacy_digest": digest,
+        },
+    }
+
+    account, reason = await store.async_load()
+
+    assert reason is not None
+    assert account.legacy_digest is None
+
+
 async def test_a_marker_naming_another_account_never_touches_shared_storage(
     hass: HomeAssistant, hass_storage
 ) -> None:
