@@ -71,6 +71,14 @@ PARSE_FAILURES_BEFORE_REPAIR = 3
 # under this key instead.
 ACCOUNT_SCOPE = "__account__"
 
+# How long an unload waits for a poll that is already running. Generous for
+# a fetch that is about to finish, and short enough not to hold an unload
+# open. It does not have to cover the worst case: a poll that outlasts it
+# finds the account closing and stops before it claims, writes or publishes
+# anything, so giving up on the wait costs nothing but the session going
+# early.
+CLOSE_TIMEOUT_SECONDS = 10
+
 # Re-exported so the rest of the integration has one import site for these.
 CONSUMPTION_ROLLING_DAYS = consumption.CONSUMPTION_ROLLING_DAYS
 SEASONAL_HISTORY_DAYS = consumption.SEASONAL_HISTORY_DAYS
@@ -121,6 +129,12 @@ class BoilerJuiceDataUpdateCoordinator(
         # released. Without it a service call landing mid-poll could be
         # overwritten by the poll's own save.
         self._lock = asyncio.Lock()
+        # Set whenever no refresh is running. async_close waits on it, so a
+        # poll already in flight finishes before the session is released and
+        # before the tank claims are given up.
+        self._idle = asyncio.Event()
+        self._idle.set()
+        self._closing = False
         self._loaded = False
         # Health is per tank: one broken tank must not make the others look
         # broken, and a healthy tank must not clear a broken one's repair.
@@ -339,9 +353,30 @@ class BoilerJuiceDataUpdateCoordinator(
     async def async_close(self) -> None:
         """Close the client's session and release its tanks (call on unload).
 
-        The claims have to go, or an account removed and added again would
-        find its own tanks already taken.
+        A refresh already in flight is waited out first. Unloading used to
+        release the claims and release the session underneath a running poll,
+        which then re-claimed the tanks on its way out: the account was gone
+        but its tanks stayed locked to it, so nothing else could ever have
+        them. The claims have to go too, or an account removed and added
+        again would find its own tanks already taken.
+
+        The wait is bounded because it is on the unload path, and it does not
+        need to cover the worst case: a poll that outlasts it finds the
+        account closing and stops before it claims, writes or publishes
+        anything.
         """
+        self._closing = True
+        await self.async_shutdown()
+        try:
+            async with asyncio.timeout(CLOSE_TIMEOUT_SECONDS):
+                await self._idle.wait()
+        except TimeoutError:
+            _LOGGER.warning(
+                "A BoilerJuice update was still running after %s seconds; "
+                "unloading the account without waiting for it",
+                CLOSE_TIMEOUT_SECONDS,
+            )
+
         self._release_claims()
         ir.async_delete_issue(self.hass, DOMAIN, self._claim_issue_id)
         await self._client.async_close()
@@ -519,6 +554,12 @@ class BoilerJuiceDataUpdateCoordinator(
         """
         if self._entry_id is None:
             return tank_ids
+
+        if self._closing:
+            # Claiming during teardown leaves the tank locked to an entry
+            # that is going away, which is the thing the claim exists to
+            # prevent, in reverse.
+            return []
 
         claims = self._claims
         mine: list[str] = []
@@ -860,10 +901,24 @@ class BoilerJuiceDataUpdateCoordinator(
             raise UpdateFailed(f"Unexpected error updating tank data: {err}") from err
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
+        """Fetch every wanted tank, holding teardown off until it is done."""
+        self._idle.clear()
+        try:
+            return await self._async_poll()
+        finally:
+            self._idle.set()
+
+    async def _async_poll(self) -> dict[str, dict[str, Any]]:
         """Fetch every wanted tank on the account."""
         await self._async_load()
 
         listed, wanted, readings = await self._async_collect()
+
+        if self._closing:
+            # The entry went away while we were on the network. Nothing here
+            # is worth writing, and reconciling against a listing we are not
+            # going to act on would retire every tank on the way out.
+            raise UpdateFailed("This BoilerJuice account is unloading")
 
         await self._async_refresh_price()
 

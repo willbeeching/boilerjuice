@@ -1296,3 +1296,87 @@ async def test_a_device_naming_two_entries_has_one_owner_whoever_asks(
 
     assert len(answers) == 1, f"the owner depends on who asks: {answers}"
     assert answers == {min(account.entry_id, other.entry_id)}
+
+
+async def test_unloading_waits_for_a_refresh_that_is_already_running(
+    hass: HomeAssistant, account: MockConfigEntry, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Teardown used to happen underneath a live poll.
+
+    Unloading released the claims and the session while a refresh was on the
+    network. The refresh then re-claimed the tanks on its way out, so the
+    account was gone but its tanks stayed locked to it and nothing else could
+    ever have them.
+    """
+    import asyncio
+
+    from custom_components.boilerjuice.const import TANK_CLAIMS
+
+    coordinator = coordinator_of(account)
+    assert set(hass.data[TANK_CLAIMS]) == {FIRST, SECOND}
+
+    parked = asyncio.Event()
+    gate = asyncio.Event()
+    collect = coordinator._async_collect
+
+    async def slow_collect() -> object:
+        parked.set()
+        await gate.wait()
+        return await collect()
+
+    coordinator._async_collect = slow_collect
+    mock_account(aioclient_mock, TWO_TANKS)
+
+    refresh = hass.async_create_task(coordinator.async_refresh())
+    await asyncio.wait_for(parked.wait(), timeout=5)
+
+    # Let the poll finish once the unload has started waiting for it.
+    async def release() -> None:
+        await asyncio.sleep(0)
+        gate.set()
+
+    hass.async_create_task(release())
+    assert await hass.config_entries.async_unload(account.entry_id)
+    await asyncio.wait_for(refresh, timeout=5)
+    await hass.async_block_till_done()
+
+    assert not hass.data.get(TANK_CLAIMS)
+
+
+async def test_a_poll_that_outlasts_the_unload_claims_nothing(
+    hass: HomeAssistant, account: MockConfigEntry, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Giving up on the wait must not give the tanks back to a dead entry."""
+    import asyncio
+    from unittest.mock import patch
+
+    from custom_components.boilerjuice.const import TANK_CLAIMS
+
+    coordinator = coordinator_of(account)
+    parked = asyncio.Event()
+    gate = asyncio.Event()
+    collect = coordinator._async_collect
+
+    async def slow_collect() -> object:
+        parked.set()
+        await gate.wait()
+        return await collect()
+
+    coordinator._async_collect = slow_collect
+    mock_account(aioclient_mock, TWO_TANKS)
+
+    refresh = hass.async_create_task(coordinator.async_refresh())
+    await asyncio.wait_for(parked.wait(), timeout=5)
+
+    with patch("custom_components.boilerjuice.coordinator.CLOSE_TIMEOUT_SECONDS", 0.01):
+        assert await hass.config_entries.async_unload(account.entry_id)
+
+    assert not hass.data.get(TANK_CLAIMS)
+
+    # Only now does the poll get to run, long after the account has gone.
+    gate.set()
+    await asyncio.wait_for(refresh, timeout=5)
+    await hass.async_block_till_done()
+
+    assert not hass.data.get(TANK_CLAIMS)
+    assert not coordinator.last_update_success

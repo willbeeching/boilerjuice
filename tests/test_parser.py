@@ -408,3 +408,71 @@ def test_an_empty_state_carrying_inline_markup_is_still_recognised() -> None:
     )
 
     assert parse_tank_ids(html) == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param('{"id": 42}', id="object-not-a-list"),
+        pytest.param('"Titan"', id="a-bare-string"),
+        pytest.param("42", id="a-bare-number"),
+        pytest.param('["just a string"]', id="entry-is-a-string"),
+        pytest.param("[[1, 2, 3]]", id="entry-is-a-list"),
+        pytest.param('[{"id": 42, "tank": null}]', id="tank-is-null"),
+        pytest.param('[{"id": 42, "tank": "Titan"}]', id="tank-is-a-string"),
+        pytest.param('[{"id": 42, "tank": {"Brand": {"en": "Titan"}}}]', id="nested"),
+        pytest.param('[{"id": 42, "tank": {"Brand": 7}}]', id="a-number-for-a-name"),
+        pytest.param('[{"id": 42, "tank": {"Brand": "   "}}]', id="blank"),
+    ],
+)
+def test_malformed_model_json_costs_the_model_and_nothing_else(payload: str) -> None:
+    """The model blob is optional decoration; the level is the reading.
+
+    Walking it on trust raised AttributeError out of the parser, so a tank
+    whose model JSON changed shape lost its level, its volume and everything
+    else with it.
+    """
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        "<p>900 litres of oil</p>"
+        '<input id="tankModelInput" value="42">'
+        f"<script>var jsonData = {payload};</script>"
+    )
+
+    reading = parse_tank_page(html, "123456")
+
+    assert reading.level_percentage == 50
+    assert reading.volume_litres == 900
+    assert reading.model_id == "42"
+    assert reading.model is None
+    assert reading.manufacturer is None
+
+
+def test_a_well_formed_model_entry_is_still_read() -> None:
+    """The check must not throw the good case out with the bad."""
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        '<input id="tankModelInput" value="42">'
+        '<script>var jsonData = [{"id": 41, "tank": {"Brand": "Other"}},'
+        ' {"id": 42, "tank": {"Brand": "Titan", "Description": "ES2500"}}];</script>'
+    )
+
+    reading = parse_tank_page(html, "123456")
+
+    assert reading.manufacturer == "Titan"
+    assert reading.model == "ES2500"
+
+
+def test_a_malformed_entry_does_not_hide_a_good_one_after_it() -> None:
+    """One bad entry in the list is skipped, not treated as the end of it."""
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        '<input id="tankModelInput" value="42">'
+        '<script>var jsonData = ["rubbish", 7, null,'
+        ' {"id": 42, "tank": {"Brand": "Titan", "Description": "ES2500"}}];</script>'
+    )
+
+    reading = parse_tank_page(html, "123456")
+
+    assert reading.manufacturer == "Titan"
+    assert reading.model == "ES2500"

@@ -370,13 +370,39 @@ def _parse_model(soup: BeautifulSoup) -> tuple[str | None, str | None, str | Non
             _LOGGER.debug("Tank model JSON did not parse: %s", err)
             break
 
+        # Shape-checked at every step. The blob is optional decoration, so a
+        # malformed one has to cost the model name and nothing else; walking
+        # it on trust raised AttributeError out of the parser instead, and
+        # took the whole tank reading with it.
+        if not isinstance(entries, list):
+            _LOGGER.debug("Tank model JSON was not a list of models")
+            break
+
         for entry in entries:
-            if str(entry.get("id")) == str(model_id):
-                tank = entry.get("tank", {})
-                return model_id, tank.get("Description"), tank.get("Brand")
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("id")) != str(model_id):
+                continue
+            tank = entry.get("tank")
+            if not isinstance(tank, dict):
+                break
+            return model_id, _text(tank.get("Description")), _text(tank.get("Brand"))
         break
 
     return model_id, None, None
+
+
+def _text(value: Any) -> str | None:
+    """Return a non-empty string, or None for anything else.
+
+    A model name is shown to the user and stored on the device, so a number
+    or a nested object where a name should be is dropped rather than
+    stringified into something like "{'en': 'Titan'}".
+    """
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
 
 
 def parse_tank_page(html: str, tank_id: str) -> TankReading:
