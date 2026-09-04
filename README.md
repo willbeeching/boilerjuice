@@ -130,7 +130,7 @@ One set per tank.
 | Daily oil consumption | L/day | Rolling 7-day average. Unknown until a complete day has been measured. `sample_days` says how much evidence is behind it |
 | Total oil consumption | L | Accumulates since the last reset |
 | Total oil energy | kWh | Accumulated using the kWh per litre in force at the time. **This is the Energy dashboard sensor** |
-| Seasonal oil consumption | L/day | Current season's average, with per-season and per-month figures as attributes |
+| Seasonal oil consumption | L/day | Current season's average, with per-season and per-month figures as attributes. Unknown until a day in this season has been recorded, which on 1 September means waiting for the first autumn reading |
 | Days until empty | d | Current volume divided by the daily rate, falling back to an estimate of 2% of capacity per day when there is no history yet |
 
 ### Price and energy
@@ -147,7 +147,7 @@ One set per tank.
 | --- | --- |
 | Last level change | When the tank level last changed. It is normal for this to sit still for days |
 | Last successful update | When the account was last polled successfully |
-| Heating season | Winter, spring, summer or autumn: the season the seasonal average is currently being taken from. Unknown until a day in this season has been recorded |
+| Heating season | Winter, spring, summer or autumn, read off the calendar. Always set, whether or not the season has recorded any consumption yet |
 
 ## How consumption tracking works
 

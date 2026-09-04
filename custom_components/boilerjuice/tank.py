@@ -245,6 +245,9 @@ class TankTracker:
     ) -> dict[str, Any]:
         """Return the state dict for `reading`, with the derived figures."""
         published = reading.as_state()
+        # A calendar fact, so it is published whether or not any history
+        # exists to average over.
+        published["heating_season"] = consumption.season_for(now)
 
         # Recalculate on every run, not just when consumption was detected,
         # so old incorrect data ages out after the rolling window.

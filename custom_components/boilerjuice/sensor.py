@@ -86,18 +86,16 @@ def _current_season(data: dict[str, Any]) -> StateType:
     return average
 
 
-def _current_season_name(data: dict[str, Any]) -> StateType:
-    """Return the season the averages are currently being taken from.
+def _heating_season(data: dict[str, Any]) -> StateType:
+    """Return the season today falls in.
 
-    None until a day in this season has been recorded, which is also when
-    the average itself becomes a number. The two move together on purpose:
-    a season name beside a blank average would invite the reading that the
-    tank burnt nothing.
+    Read off the calendar, not off the history. It was briefly tied to
+    whether the season had any recorded consumption, so a tank whose level
+    had not moved since August reported an unknown season on 4 September.
+    Which season it is does not depend on how much oil has been burnt.
     """
-    name: str | None = (
-        data.get("seasonal_stats", {}).get("current_season", {}).get("name")
-    )
-    return name
+    season: str | None = data.get("heating_season")
+    return season
 
 
 def _price_attributes(data: dict[str, Any]) -> dict[str, Any]:
@@ -288,7 +286,7 @@ SENSORS: tuple[BoilerJuiceSensorDescription, ...] = (
         device_class=SensorDeviceClass.ENUM,
         options=list(SEASONS),
         entity_category=EntityCategory.DIAGNOSTIC,
-        value=_current_season_name,
+        value=_heating_season,
     ),
 )
 

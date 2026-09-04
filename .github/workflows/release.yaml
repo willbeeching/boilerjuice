@@ -33,22 +33,22 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: Read and validate the tag
+      - name: Read the tag
         id: version
+        # Reads the tag and nothing else. What counts as a valid version is
+        # decided in one place, scripts/check_versions.py, which runs in the
+        # next step. A second copy of the rule here is how v2.0.0-beta.1
+        # failed: the script had learnt about prereleases and this had not.
+        #
         # The ref reaches the shell through the environment, never through
         # template interpolation, so its contents cannot become shell syntax.
         env:
           REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          version="${REF#refs/tags/}"
-          if ! printf '%s' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error::Tag '$version' is not vMAJOR.MINOR.PATCH"
-            exit 1
-          fi
-          echo "VERSION=$version" >> "$GITHUB_OUTPUT"
+          echo "VERSION=${REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
-      - name: Check the tag matches the manifest and the HACS floor
+      - name: Validate the tag against the manifest and the HACS floor
         id: gate
         env:
           VERSION: ${{ steps.version.outputs.VERSION }}

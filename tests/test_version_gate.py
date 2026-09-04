@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
 import re
 
@@ -395,3 +396,63 @@ def test_the_release_check_fails_closed(
     else:
         assert result.returncode != 0, result.stdout + result.stderr
         assert re.search(r"::error::", result.stdout)
+
+
+def test_the_release_workflow_does_not_carry_its_own_version_rule() -> None:
+    """One place decides what a version is: scripts/check_versions.py.
+
+    v2.0.0-beta.1 failed because the workflow held a second copy of the
+    pattern. The script had learnt about prereleases; the shell had not.
+    """
+    workflow = _release_workflow()
+    scripts = [
+        step["run"]
+        for job in workflow["jobs"].values()
+        if isinstance(job, dict)
+        for step in job.get("steps", [])
+        if "run" in step
+    ]
+
+    digits = re.compile(r"\[0-9\]\+\\?\.")
+    for script in scripts:
+        assert not digits.search(script), (
+            "a version pattern lives in the workflow as well as in "
+            f"check_versions.py:\n{script}"
+        )
+
+    package = workflow["jobs"]["package"]["steps"]
+    names = [step.get("name", "") for step in package]
+    assert names.index("Read the tag") < names.index(
+        "Validate the tag against the manifest and the HACS floor"
+    )
+
+
+@pytest.mark.parametrize(
+    "ref",
+    ["refs/tags/v2.0.0", "refs/tags/v2.0.0-beta.1", "refs/tags/v10.2.3-rc.2"],
+)
+def test_the_read_step_passes_the_tag_through(ref: str) -> None:
+    """The step reads the tag. It does not get an opinion about it."""
+    import subprocess
+    import tempfile
+
+    script = next(
+        step["run"]
+        for step in _release_workflow()["jobs"]["package"]["steps"]
+        if step.get("name") == "Read the tag"
+    )
+
+    with tempfile.NamedTemporaryFile("r+", suffix=".txt") as output:
+        result = subprocess.run(
+            ["bash", "-c", script],
+            env={
+                "PATH": os.environ["PATH"],
+                "REF": ref,
+                "GITHUB_OUTPUT": output.name,
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert output.read().strip() == f"VERSION={ref.removeprefix('refs/tags/')}"

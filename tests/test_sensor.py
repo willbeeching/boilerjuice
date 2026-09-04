@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from custom_components.boilerjuice.consumption import SEASONS
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
@@ -141,12 +142,22 @@ async def test_the_heating_season_sensor_names_the_season(
     assert "unit_of_measurement" not in season.attributes
 
 
-async def test_the_heating_season_is_unknown_before_this_season_has_data(
+async def test_the_season_is_named_even_when_it_has_no_consumption_yet(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
-    """Naming a season beside a blank average invites reading it as zero."""
+    """Which season it is does not depend on how much oil has been burnt.
+
+    The season was briefly read off the history, so a tank whose level had
+    not moved since August reported an unknown season on 4 September. The
+    average has nothing to report until autumn records a day; the season
+    itself is on the calendar either way.
+    """
     entry = await setup_account(hass, aioclient_mock)
     coordinator = coordinator_of(entry)
+
+    mock_site(aioclient_mock, tank_html=tank_page(percentage=70, litres=1750))
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
 
     published = {
         tank_id: {**reading, "seasonal_stats": {}}
@@ -165,7 +176,7 @@ async def test_the_heating_season_is_unknown_before_this_season_has_data(
         for state in hass.states.async_all("sensor")
         if state.entity_id.endswith("_seasonal_oil_consumption")
     )
-    assert season.state == "unknown"
+    assert season.state in SEASONS
     assert seasonal.state == "unknown"
 
 

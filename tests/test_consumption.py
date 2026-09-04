@@ -261,7 +261,7 @@ def test_seasonal_stats_group_by_season_and_month() -> None:
     assert stats["summer_avg"] == 2.0
     assert stats["autumn_avg"] == 12.0
     assert stats["monthly"]["January"] == 25.0
-    assert stats["current_season"]["name"] == "winter"
+    assert stats["current_season"]["avg"] == 25.0
 
 
 def test_seasonal_stats_are_empty_without_history() -> None:
@@ -272,12 +272,7 @@ def test_a_season_with_no_data_is_unknown_not_a_measured_zero() -> None:
     """0.0 L/day would claim the tank measurably burnt nothing all winter."""
     stats = consumption.seasonal_stats({"2026-07-05": 2.0}, at(10), midnight)
 
-    assert stats["current_season"] == {
-        "name": None,
-        "avg": None,
-        "min": None,
-        "max": None,
-    }
+    assert stats["current_season"] == {"avg": None, "min": None, "max": None}
     assert "winter_avg" not in stats
 
 
