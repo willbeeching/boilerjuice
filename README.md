@@ -310,6 +310,7 @@ Home Assistant handles automatically on first start.
 | --- | --- |
 | `sensor.<tank>_oil_consumption_kwh` | **Removed.** It accumulated its value as a side effect of being read, so what it reported depended on how often something looked at it. Use **Total oil energy** on the Energy dashboard instead, now that its conversion honours your configured kWh per litre |
 | `sensor.<tank>_last_updated` | Renamed to **Last level change**, which is what it has always measured. A new **Last successful update** sensor reports when the account was last polled |
+| `sensor.<tank>_seasonal_oil_consumption` | Its `current_season` attribute is gone. The season is now a **Heating season** sensor, so it can be translated and graphed: read `states('sensor.<tank>_heating_season')` instead of `state_attr('sensor.<tank>_seasonal_oil_consumption', 'current_season')`. The seasonal and monthly averages stay where they are |
 
 If the Energy dashboard was configured against the removed sensor, point it
 at Total oil energy. Its historical statistics do not carry across.

@@ -21,6 +21,9 @@
       },
       "seasonal_consumption": {
         "default": "mdi:weather-partly-cloudy"
+      },
+      "heating_season": {
+        "default": "mdi:sun-snowflake-variant"
       }
     }
   }

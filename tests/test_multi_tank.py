@@ -96,7 +96,7 @@ async def test_both_tanks_get_their_own_device_and_entities(
     assert tank_device(hass, account, SECOND) is not None
 
     # 14 sensors per tank, and nothing shared between them.
-    assert len(hass.states.async_all("sensor")) == 28
+    assert len(hass.states.async_all("sensor")) == 30
 
 
 async def test_each_tank_keeps_its_own_consumption(
@@ -135,13 +135,13 @@ async def test_a_tank_added_later_gets_entities_without_a_restart(
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    assert len(hass.states.async_all("sensor")) == 14
+    assert len(hass.states.async_all("sensor")) == 15
 
     mock_account(aioclient_mock, TWO_TANKS)
     await coordinator_of(entry).async_refresh()
     await hass.async_block_till_done()
 
-    assert len(hass.states.async_all("sensor")) == 28
+    assert len(hass.states.async_all("sensor")) == 30
 
 
 async def test_a_tank_is_only_removed_after_repeated_authoritative_absences(

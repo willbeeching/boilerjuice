@@ -135,6 +135,15 @@
       },
       "seasonal_consumption": {
         "name": "Seasonal oil consumption"
+      },
+      "heating_season": {
+        "name": "Heating season",
+        "state": {
+          "winter": "Winter",
+          "spring": "Spring",
+          "summer": "Summer",
+          "autumn": "Autumn"
+        }
       }
     }
   },

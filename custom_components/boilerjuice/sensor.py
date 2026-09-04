@@ -35,6 +35,7 @@ from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DEFAULT_KWH_PER_LITRE, DOMAIN
+from .consumption import SEASONS
 from .coordinator import BoilerJuiceDataUpdateCoordinator
 from .runtime import BoilerJuiceConfigEntry
 
@@ -85,6 +86,20 @@ def _current_season(data: dict[str, Any]) -> StateType:
     return average
 
 
+def _current_season_name(data: dict[str, Any]) -> StateType:
+    """Return the season the averages are currently being taken from.
+
+    None until a day in this season has been recorded, which is also when
+    the average itself becomes a number. The two move together on purpose:
+    a season name beside a blank average would invite the reading that the
+    tank burnt nothing.
+    """
+    name: str | None = (
+        data.get("seasonal_stats", {}).get("current_season", {}).get("name")
+    )
+    return name
+
+
 def _price_attributes(data: dict[str, Any]) -> dict[str, Any]:
     """Return the price sensor's attributes."""
     return {
@@ -111,9 +126,10 @@ def _seasonal_attributes(data: dict[str, Any]) -> dict[str, Any]:
     if not stats:
         return {}
 
+    # The season's name is its own sensor. Repeating it here would be two
+    # sources for one fact, and the sensor is the one that can be translated.
     current = stats.get("current_season", {})
     attributes: dict[str, Any] = {
-        "current_season": current.get("name") or None,
         "current_season_min": current.get("min"),
         "current_season_max": current.get("max"),
         "winter_average": stats.get("winter_avg"),
@@ -261,6 +277,18 @@ SENSORS: tuple[BoilerJuiceSensorDescription, ...] = (
         value=_current_season,
         attributes=_seasonal_attributes,
         legacy_class="BoilerJuiceSeasonalConsumptionSensor",
+    ),
+    BoilerJuiceSensorDescription(
+        # The season used to be a raw English string in the attributes of a
+        # L/day sensor, which meant it could not be translated, could not be
+        # graphed, and had to be read with state_attr(). As an enum sensor
+        # it is all three.
+        key="heating_season",
+        translation_key="heating_season",
+        device_class=SensorDeviceClass.ENUM,
+        options=list(SEASONS),
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value=_current_season_name,
     ),
 )
 

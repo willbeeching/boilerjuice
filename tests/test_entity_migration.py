@@ -140,4 +140,4 @@ async def test_every_sensor_carries_a_legacy_class_except_the_new_one() -> None:
         description.key for description in SENSORS if description.legacy_class is None
     ]
 
-    assert without_legacy == ["last_successful_update"]
+    assert without_legacy == ["last_successful_update", "heating_season"]
