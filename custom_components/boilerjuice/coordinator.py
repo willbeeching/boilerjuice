@@ -40,7 +40,7 @@ from .const import (
     TANK_CLAIMS,
 )
 from .errors import BoilerJuiceAuthError, BoilerJuiceParseError
-from .helpers import async_tank_device
+from .helpers import async_tank_device, device_config_entry_ids
 from .models import TankReading
 from .parser import finite, validate_tank_id
 from .storage import (
@@ -524,13 +524,45 @@ class BoilerJuiceDataUpdateCoordinator(
         mine: list[str] = []
         taken: dict[str, str] = {}
         for tank_id in tank_ids:
-            owner = claims.setdefault(tank_id, self._entry_id)
+            owner = claims.get(tank_id)
+            if owner is None:
+                # Nobody has claimed it this run. The device registry
+                # outlives a restart and the claim map does not, so it has
+                # the last word on who owned the tank before; without it,
+                # whichever account happened to start first took the lot.
+                owner = self._recorded_owner(tank_id) or self._entry_id
+                claims[tank_id] = owner
             if owner == self._entry_id:
                 mine.append(tank_id)
             else:
                 taken[tank_id] = owner
         self._refresh_claim_issue(taken)
         return mine
+
+    @callback
+    def _recorded_owner(self, tank_id: str) -> str | None:
+        """Return the entry the device registry already records as owning a tank.
+
+        Asked per entry because since 2026.9 the lookup is scoped to one, and
+        the answer is then read off the device rather than from which entry
+        we happened to ask about, because on the supported floor identifiers
+        are still global and the lookup ignores the scope.
+        """
+        entries = self.hass.config_entries.async_entries(DOMAIN)
+        known = {entry.entry_id for entry in entries}
+        for entry in entries:
+            device = async_tank_device(self.hass, tank_id, entry.entry_id)
+            if device is None:
+                continue
+            owners = device_config_entry_ids(device) & known
+            if not owners:
+                continue
+            # Ourselves first, so an ordinary restart keeps what it had even
+            # if the device somehow names more than one entry.
+            if self._entry_id in owners:
+                return self._entry_id
+            return sorted(owners)[0]
+        return None
 
     def _refresh_claim_issue(self, taken: dict[str, str]) -> None:
         """Raise or clear the "another account already has this tank" repair."""

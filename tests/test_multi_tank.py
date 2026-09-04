@@ -1193,3 +1193,59 @@ async def test_a_retired_tank_can_be_claimed_by_another_account(
     await hass.async_block_till_done()
 
     assert coordinator_of(other).tank_ids == [SECOND]
+
+
+async def test_a_restart_does_not_move_tanks_to_whichever_account_starts_first(
+    hass: HomeAssistant, account: MockConfigEntry, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """The claim map dies with the process; the device registry does not.
+
+    Held only in memory, ownership went to whichever account started first
+    after a restart, whatever the registry said. That moves the coordinator,
+    the history and the device associations to the wrong account, and leaves
+    entities pointing at a config entry that no longer owns them.
+    """
+    from custom_components.boilerjuice.const import TANK_CLAIMS
+    from homeassistant.config_entries import ConfigEntryState
+
+    first = coordinator_of(account)
+    assert sorted(first.tank_ids) == [FIRST, SECOND]
+
+    other = MockConfigEntry(
+        domain=DOMAIN,
+        title="BoilerJuice (someone-else@example.com)",
+        data={CONF_EMAIL: "someone-else@example.com", CONF_PASSWORD: "hunter2"},
+        unique_id="someone-else@example.com",
+    )
+    other.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(other.entry_id)
+    await hass.async_block_till_done()
+    assert coordinator_of(other).tank_ids == []
+
+    # A restart: both entries unload, and the in-memory claims go with them.
+    for entry in (account, other):
+        assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert not hass.data.get(TANK_CLAIMS)
+
+    # The account that did not own them comes up first this time.
+    mock_account(aioclient_mock, TWO_TANKS)
+    assert await hass.config_entries.async_setup(other.entry_id)
+    await hass.async_block_till_done()
+
+    assert coordinator_of(other).tank_ids == []
+
+    assert await hass.config_entries.async_setup(account.entry_id)
+    await hass.async_block_till_done()
+
+    assert account.state is ConfigEntryState.LOADED
+    assert sorted(coordinator_of(account).tank_ids) == [FIRST, SECOND]
+    # Read off the device rather than from which entry we asked about: on
+    # the supported floor, identifiers are global and the lookup ignores the
+    # entry, so asking "does the other account have one" always says yes.
+    from custom_components.boilerjuice.helpers import device_config_entry_ids
+
+    for tank_id in (FIRST, SECOND):
+        device = tank_device(hass, account, tank_id)
+        assert device is not None
+        assert device_config_entry_ids(device) == {account.entry_id}

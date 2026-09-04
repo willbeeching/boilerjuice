@@ -289,6 +289,12 @@ class AccountState:
     # never recorded which tank it belonged to. It is claimed on the first
     # poll that finds exactly one tank, and dropped otherwise.
     unassigned: ConsumptionState | None = None
+    # The key in the shared v1 document this account was migrated out of,
+    # while that key is still there. Recorded rather than worked out again
+    # later: the shared "default" bucket is not tied to any account, so a
+    # second look could match one that belongs to an entry which has not
+    # migrated yet, and deleting it would take their history with it.
+    legacy_slot: str | None = None
 
 
 def account_from_document(document: Any) -> AccountState:
@@ -312,6 +318,10 @@ def account_from_document(document: Any) -> AccountState:
 
     unassigned = document.get("unassigned")
 
+    legacy_slot = document.get("legacy_slot")
+    if legacy_slot is not None and not isinstance(legacy_slot, str):
+        raise InvalidStoredData("legacy_slot must be a string")
+
     return AccountState(
         tanks={tank_id: state_from_document(sub) for tank_id, sub in tanks.items()},
         missing={
@@ -320,6 +330,7 @@ def account_from_document(document: Any) -> AccountState:
         },
         retired=set(retired),
         unassigned=None if unassigned is None else state_from_document(unassigned),
+        legacy_slot=legacy_slot,
     )
 
 
@@ -337,6 +348,7 @@ def document_from_account(account: AccountState) -> dict[str, Any]:
             if account.unassigned is None
             else document_from_state(account.unassigned)
         ),
+        "legacy_slot": account.legacy_slot,
     }
 
 
@@ -371,21 +383,31 @@ class ConsumptionStore:
         document = await self._store.async_load()
 
         if document is not None:
-            # A migration that wrote the destination but could not clear the
-            # source leaves a slot behind, and a slot is not inert: another
-            # entry pinned to the same tank id would adopt it as its own
-            # history. Migration never runs again once the destination
-            # exists, so the cleanup is retried here instead.
-            await self._async_discard_legacy_slot()
             try:
-                return account_from_document(document), None
+                account = account_from_document(document)
             except InvalidStoredData as err:
                 _LOGGER.warning(
                     "Discarding unusable stored BoilerJuice consumption data "
                     "for this account: %s",
                     err,
                 )
+                # Nothing has been deleted yet, which is the point of
+                # validating before touching the source. If the shared v1
+                # document still holds this account's slot, it is now the
+                # only copy of the history there is, so it is migrated rather
+                # than thrown away on top of the document we could not read.
+                recovered = await self._async_migrate_from_legacy()
+                if recovered is not None:
+                    return recovered[0], str(err)
                 return AccountState(), str(err)
+
+            # A migration that wrote the destination but could not clear the
+            # source leaves a slot behind, and a slot is not inert: another
+            # entry pinned to the same tank id would adopt it as its own
+            # history. Migration never runs again once the destination
+            # exists, so the cleanup is finished here instead.
+            await self._async_finish_migration(account)
+            return account, None
 
         migrated = await self._async_migrate_from_legacy()
         if migrated is not None:
@@ -453,9 +475,16 @@ class ConsumptionStore:
             # and the source already deleted, so the account's whole history
             # was gone. Raising here leaves the shared document intact and
             # the next start tries again.
+            # Saved with the slot recorded, so a cleanup that fails can be
+            # finished later against the slot we actually took, and not
+            # against whatever a fresh search happens to match.
+            account.legacy_slot = slot
             await self.async_save(account)
 
             await self._async_drop_slot(shared, slot)
+
+            account.legacy_slot = None
+            await self.async_save(account)
 
             _LOGGER.info(
                 "Migrated BoilerJuice consumption history out of the shared "
@@ -464,22 +493,28 @@ class ConsumptionStore:
 
             return account, reason
 
-    async def _async_discard_legacy_slot(self) -> None:
-        """Remove this entry's slot from the shared v1 document, if it is there.
+    async def _async_finish_migration(self, account: AccountState) -> None:
+        """Drop the slot this account was migrated from, if one is still there.
 
-        A no-op once the shared document is gone, which is the ordinary case
-        after the first successful migration.
+        The slot is the one the migration recorded, never one worked out
+        again from scratch: `_slot_in` can match the shared "default" bucket,
+        which belongs to nobody in particular, so a second look could delete
+        history belonging to an entry that has not migrated yet.
+
+        A no-op in the ordinary case, where the shared document is long gone
+        and the account has no slot recorded.
         """
-        lock = self._hass.data.setdefault(LEGACY_MIGRATION_LOCK, asyncio.Lock())
+        if account.legacy_slot is None:
+            return
 
+        lock = self._hass.data.setdefault(LEGACY_MIGRATION_LOCK, asyncio.Lock())
         async with lock:
             shared = await self._legacy.async_load()
-            if not shared:
-                return
-            slot = self._slot_in(shared)
-            if slot is None:
-                return
-            await self._async_drop_slot(shared, slot)
+            if shared and account.legacy_slot in shared:
+                await self._async_drop_slot(shared, account.legacy_slot)
+
+        account.legacy_slot = None
+        await self.async_save(account)
 
     async def _async_drop_slot(self, shared: dict[str, Any], slot: str) -> None:
         """Write the shared document without `slot`, and confirm it went.

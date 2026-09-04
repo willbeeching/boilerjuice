@@ -233,16 +233,127 @@ async def test_a_restart_resumes_from_the_stored_totals(
 # --- migration from the shared v1 document --------------------------------
 
 
+async def test_an_unreadable_destination_recovers_from_the_legacy_slot(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    """The source is the only copy left, so it must not be deleted first.
+
+    The cleanup ran before the destination was validated, so a corrupt
+    destination plus a good legacy slot ended with the slot deleted and the
+    account empty. There is no undo for that.
+    """
+    from custom_components.boilerjuice.storage import LEGACY_STORAGE_KEY
+
+    entry = make_entry(hass)
+    other = make_entry(hass, email="two@example.com", tank_id="222222")
+    store = ConsumptionStore(hass, entry.entry_id, None)
+
+    hass_storage[store.key] = {
+        "version": STORAGE_VERSION,
+        "data": {"tanks": "this is not an object"},
+    }
+    hass_storage[LEGACY_STORAGE_KEY] = {
+        "version": 1,
+        "data": {
+            entry.entry_id: {"total_consumption_liters": 330.0},
+            other.entry_id: {"total_consumption_liters": 90.0},
+        },
+    }
+
+    account, reason = await store.async_load()
+
+    assert reason is not None, "the unreadable destination is still reported"
+    assert account.unassigned is not None
+    assert account.unassigned.total_litres == 330.0
+    # Recovered, so the slot has served its purpose and goes.
+    assert entry.entry_id not in hass_storage[LEGACY_STORAGE_KEY]["data"]
+    assert hass_storage[LEGACY_STORAGE_KEY]["data"][other.entry_id] == {
+        "total_consumption_liters": 90.0
+    }
+
+
+async def test_an_unreadable_destination_with_no_fallback_starts_empty(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    """With nothing to recover from, the repair is all there is to give."""
+    entry = make_entry(hass)
+    store = ConsumptionStore(hass, entry.entry_id, None)
+    hass_storage[store.key] = {
+        "version": STORAGE_VERSION,
+        "data": {"tanks": "this is not an object"},
+    }
+
+    account, reason = await store.async_load()
+
+    assert reason is not None
+    assert account.tanks == {}
+    assert account.unassigned is None
+
+
+async def test_a_finished_migration_never_reclaims_the_shared_default_bucket(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    """The shared bucket belongs to nobody, so it must not be deleted twice.
+
+    The retry used to look the slot up again rather than remember it. A
+    pinned entry that had already migrated would match "default" a second
+    time and delete it, taking the history of an entry that had not migrated
+    yet.
+    """
+    from custom_components.boilerjuice.storage import LEGACY_STORAGE_KEY
+
+    first = make_entry(hass, tank_id="123456")
+    second = make_entry(hass, email="two@example.com", tank_id="222222")
+
+    hass_storage[LEGACY_STORAGE_KEY] = {
+        "version": 1,
+        "data": {"default": {"total_consumption_liters": 330.0}},
+    }
+
+    store = ConsumptionStore(hass, first.entry_id, "123456")
+    account, reason = await store.async_load()
+
+    assert reason is None
+    assert account.tanks["123456"].total_litres == 330.0
+    assert LEGACY_STORAGE_KEY not in hass_storage
+
+    # A second "default" appears, belonging to the other entry. The first
+    # entry has finished with its own and must leave this one alone.
+    hass_storage[LEGACY_STORAGE_KEY] = {
+        "version": 1,
+        "data": {"default": {"total_consumption_liters": 90.0}},
+    }
+
+    await store.async_load()
+    assert hass_storage[LEGACY_STORAGE_KEY]["data"]["default"] == {
+        "total_consumption_liters": 90.0
+    }
+
+    # And it is still there for the entry it belongs to.
+    theirs = ConsumptionStore(hass, second.entry_id, "222222")
+    account, reason = await theirs.async_load()
+    assert reason is None
+    assert account.tanks["222222"].total_litres == 90.0
+
+
 async def test_a_legacy_slot_that_survived_cleanup_is_dropped_next_start(
     hass: HomeAssistant, hass_storage
 ) -> None:
     """A slot left in the shared document is not inert.
 
     Migration only runs while the destination is missing, so a cleanup that
-    failed used to leave the slot there for good. Another entry pinned to the
-    same tank id would then adopt it as its own history.
+    failed used to leave the slot there for good, and another entry pinned to
+    the same tank id would adopt it as its own history. The slot the
+    migration actually took is recorded, and the next start finishes the job.
     """
-    from custom_components.boilerjuice.storage import LEGACY_STORAGE_KEY
+    from unittest.mock import patch
+
+    from custom_components.boilerjuice.storage import (
+        LEGACY_STORAGE_KEY,
+        StorageWriteFailed,
+    )
+    from homeassistant.helpers.storage import Store
+    from homeassistant.util.file import WriteError
 
     entry = make_entry(hass)
     other = make_entry(hass, email="two@example.com", tank_id="222222")
@@ -255,17 +366,34 @@ async def test_a_legacy_slot_that_survived_cleanup_is_dropped_next_start(
     }
 
     store = ConsumptionStore(hass, entry.entry_id, None)
-    account, reason = await store.async_load()
-    assert reason is None
-    assert account.unassigned is not None
+    real = Store._async_write_data
 
-    # Put the slot back, as a failed cleanup would have left it.
-    hass_storage[LEGACY_STORAGE_KEY]["data"][entry.entry_id] = {
+    async def fail_the_legacy_write(self, *args):
+        if self.key == LEGACY_STORAGE_KEY:
+            raise WriteError("no space left")
+        await real(self, *args)
+
+    with (
+        patch.object(Store, "_async_write_data", fail_the_legacy_write),
+        pytest.raises(StorageWriteFailed),
+    ):
+        await store.async_load()
+
+    # The history reached its destination, and the destination remembers
+    # which slot it came out of.
+    saved = hass_storage[store.key]["data"]
+    assert saved["legacy_slot"] == entry.entry_id
+    assert hass_storage[LEGACY_STORAGE_KEY]["data"][entry.entry_id] == {
         "total_consumption_liters": 330.0
     }
 
-    await store.async_load()
+    account, reason = await store.async_load()
 
+    assert reason is None
+    assert account.unassigned is not None
+    assert account.unassigned.total_litres == 330.0
+    assert account.legacy_slot is None
+    assert hass_storage[store.key]["data"]["legacy_slot"] is None
     assert entry.entry_id not in hass_storage[LEGACY_STORAGE_KEY]["data"]
     # Somebody else's slot is left exactly where it is.
     assert hass_storage[LEGACY_STORAGE_KEY]["data"][other.entry_id] == {
