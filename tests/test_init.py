@@ -179,6 +179,129 @@ async def test_a_version_1_entry_is_migrated_without_touching_entities(
     )
 
 
+async def test_two_version_1_entries_for_one_account_do_not_both_migrate(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """The same address typed two ways normalises to one id.
+
+    Migrating both reported success while Home Assistant refused the second
+    unique id with its "please create a bug report" error, leaving two live
+    entries fighting over one account. The second stays on version one,
+    unloaded, with a repair naming the entry to remove.
+    """
+    from custom_components.boilerjuice.const import CONF_TANK_ID
+    from homeassistant.config_entries import ConfigEntryState
+    from homeassistant.helpers import issue_registry as ir
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    mock_site(aioclient_mock, tank_html=tank_page(percentage=80, litres=2000))
+    entries = []
+    for email in ("Someone@Example.com", " someone@example.com "):
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            title=f"BoilerJuice ({email.strip()})",
+            version=1,
+            data={
+                CONF_EMAIL: email,
+                CONF_PASSWORD: "hunter2",
+                CONF_TANK_ID: "123456",
+            },
+            unique_id=email,
+        )
+        entry.add_to_hass(hass)
+        entries.append(entry)
+
+    # Setting up the component sets up both of its entries.
+    await hass.config_entries.async_setup(entries[0].entry_id)
+    await hass.async_block_till_done()
+
+    # Exactly one of them owns the account. Which one is decided by entry id,
+    # so the answer does not change with the order they are set up in.
+    loaded = [entry for entry in entries if entry.state is ConfigEntryState.LOADED]
+    assert len(loaded) == 1
+    migrated = loaded[0]
+    assert migrated.version == 2
+    refused = next(entry for entry in entries if entry is not migrated)
+
+    assert migrated.unique_id == "someone@example.com"
+    assert refused.version == 1
+    assert refused.unique_id == refused.data[CONF_EMAIL]
+
+    registry = ir.async_get(hass)
+    assert (
+        registry.async_get_issue(DOMAIN, f"duplicate_account_{migrated.entry_id}")
+        is None
+    )
+    issue = registry.async_get_issue(DOMAIN, f"duplicate_account_{refused.entry_id}")
+    assert issue is not None
+    assert issue.translation_key == "duplicate_account"
+
+
+async def test_a_version_1_entry_colliding_with_a_migrated_one_is_refused(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """The entry that already holds the id keeps it, whatever the entry ids say."""
+    from custom_components.boilerjuice.const import CONF_TANK_ID
+    from homeassistant.config_entries import ConfigEntryState
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    mock_site(aioclient_mock, tank_html=tank_page(percentage=80, litres=2000))
+    settled = MockConfigEntry(
+        domain=DOMAIN,
+        title="BoilerJuice (someone@example.com)",
+        version=2,
+        data={
+            CONF_EMAIL: "someone@example.com",
+            CONF_PASSWORD: "hunter2",
+            CONF_TANK_ID: "123456",
+        },
+        unique_id="someone@example.com",
+    )
+    settled.add_to_hass(hass)
+
+    latecomer = MockConfigEntry(
+        domain=DOMAIN,
+        version=1,
+        data={
+            CONF_EMAIL: "SOMEONE@example.com ",
+            CONF_PASSWORD: "hunter2",
+            CONF_TANK_ID: "123456",
+        },
+        unique_id="SOMEONE@example.com ",
+    )
+    latecomer.add_to_hass(hass)
+
+    await hass.config_entries.async_setup(settled.entry_id)
+    await hass.async_block_till_done()
+
+    assert settled.state is ConfigEntryState.LOADED
+    assert latecomer.state is not ConfigEntryState.LOADED
+    assert latecomer.version == 1
+
+
+async def test_an_entry_from_a_newer_version_is_not_downgraded(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Rolling the integration back must not rewrite a newer entry."""
+    from homeassistant.config_entries import ConfigEntryState
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    mock_site(aioclient_mock, tank_html=tank_page(percentage=80, litres=2000))
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=3,
+        data={CONF_EMAIL: "someone@example.com", CONF_PASSWORD: "hunter2"},
+        unique_id="someone@example.com",
+    )
+    entry.add_to_hass(hass)
+
+    assert not await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.version == 3
+    assert entry.state is ConfigEntryState.MIGRATION_ERROR
+
+
 async def test_the_deprecated_yaml_block_warns(
     hass: HomeAssistant,
     aioclient_mock: AiohttpClientMocker,

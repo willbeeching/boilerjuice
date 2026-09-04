@@ -7,7 +7,7 @@ from collections.abc import Container, Coroutine, Iterable
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.config_entries import SOURCE_IMPORT
+from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, Platform
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
@@ -15,6 +15,7 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.typing import ConfigType
 
 from .const import CONF_TANK_ID, DOMAIN
@@ -195,17 +196,18 @@ def _tank_ids_for_devices(hass: HomeAssistant, device_ids: Iterable[str]) -> set
 
 def _resolve_targets(
     hass: HomeAssistant, call: ServiceCall
-) -> list[tuple[BoilerJuiceDataUpdateCoordinator, str | None]]:
-    """Return the (coordinator, tank id) pairs a service call operates on.
+) -> tuple[BoilerJuiceDataUpdateCoordinator, list[str] | None]:
+    """Return the account a service call operates on, and which of its tanks.
 
     Resolves every target selector Home Assistant supports (entity, device,
-    area and label) plus the explicit ``entry_id``. A target that names
-    nothing belonging to this integration raises rather than falling through
-    to "every configured account" - these services rewrite stored consumption
-    history, so an accidental fan-out is destructive and silent.
+    area, floor and label) plus the explicit ``entry_id``. A target that
+    names nothing belonging to this integration raises rather than falling
+    through to "every configured account" - these services rewrite stored
+    consumption history, so an accidental fan-out is destructive and silent.
 
-    A tank id of None means "every tank on that account", which is what an
-    account-wide target such as a config entry id means.
+    One account, because a call reaching two of them cannot be undone on the
+    one already written. Tank ids of None means "every tank on that account",
+    which is what an account-wide target such as a config entry id means.
     """
     coordinators = _loaded_coordinators(hass)
     if not coordinators:
@@ -219,7 +221,7 @@ def _resolve_targets(
         # No target at all. With a single account this is unambiguous; with
         # more than one, refuse rather than guess.
         if len(coordinators) == 1:
-            return [(next(iter(coordinators.values())), None)]
+            return next(iter(coordinators.values())), None
         raise ServiceValidationError(
             translation_domain=DOMAIN, translation_key="target_required"
         )
@@ -279,21 +281,22 @@ def _resolve_targets(
             translation_domain=DOMAIN, translation_key="no_boilerjuice_target"
         )
 
-    resolved: list[tuple[BoilerJuiceDataUpdateCoordinator, str | None]] = []
-    for entry_id in sorted(entry_ids):
-        coordinator = coordinators[entry_id]
-        if entry_id in account_wide:
-            resolved.append((coordinator, None))
-            continue
-        tanks = [tank_id for tank_id in coordinator.tank_ids if tank_id in named_tanks]
-        if not tanks:
-            # The target reached this account through a device or entity we
-            # could not tie back to a tank. Refuse rather than widen.
-            raise ServiceValidationError(
-                translation_domain=DOMAIN, translation_key="no_boilerjuice_target"
-            )
-        resolved.extend((coordinator, tank_id) for tank_id in tanks)
-    return resolved
+    entry_id = next(iter(entry_ids))
+    coordinator = coordinators[entry_id]
+    if entry_id in account_wide:
+        return coordinator, None
+
+    tanks = [tank_id for tank_id in coordinator.tank_ids if tank_id in named_tanks]
+    if not tanks:
+        # The target reached this account through a device or entity we could
+        # not tie back to a tank. Refuse rather than widen.
+        raise ServiceValidationError(
+            translation_domain=DOMAIN, translation_key="no_boilerjuice_target"
+        )
+    # Every named tank, in one list, so the coordinator applies them under one
+    # lock and one write. Handing them over one at a time meant a failure on
+    # the second left the first permanently changed.
+    return coordinator, tanks
 
 
 def _devices_for_entities(hass: HomeAssistant, entity_ids: Iterable[str]) -> set[str]:
@@ -393,9 +396,12 @@ def async_setup_services(hass: HomeAssistant) -> None:
 
     async def async_handle_reset_consumption(call: ServiceCall) -> None:
         """Handle the service call to reset consumption."""
-        for coordinator, tank_id in _resolve_targets(hass, call):
-            await _stored_history_change(coordinator.async_reset_consumption(tank_id))
-            await coordinator.async_request_refresh()
+        coordinator, tank_ids = _resolve_targets(hass, call)
+        await _stored_history_change(coordinator.async_reset_consumption(tank_ids))
+        # The reset has already been published from what we hold. This asks
+        # for fresh readings on top; whether it succeeds does not change what
+        # the entities show.
+        await coordinator.async_request_refresh()
 
     hass.services.async_register(
         DOMAIN,
@@ -406,33 +412,30 @@ def async_setup_services(hass: HomeAssistant) -> None:
 
     async def async_handle_set_consumption(call: ServiceCall) -> None:
         """Handle the service call to set consumption values."""
-        targets = _resolve_targets(hass, call)
+        coordinator, tank_ids = _resolve_targets(hass, call)
 
         # Rebasing the references needs a reading to rebase onto. Every
         # target is checked before any of them is written, so a call naming
         # a whole account with one tank offline changes nothing at all: the
         # offline tank would take the new total without a new reference and
         # book the gap as consumption when it came back.
-        missing: list[str] = []
-        for coordinator, tank_id in targets:
-            if not coordinator.data:
-                raise HomeAssistantError(
-                    translation_domain=DOMAIN, translation_key="no_reading_yet"
-                )
-            missing.extend(coordinator.tanks_without_readings(tank_id))
+        if not coordinator.data:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="no_reading_yet"
+            )
+        missing = coordinator.tanks_without_readings(tank_ids)
         if missing:
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
                 translation_key="tanks_without_readings",
-                translation_placeholders={"tanks": ", ".join(sorted(set(missing)))},
+                translation_placeholders={"tanks": ", ".join(sorted(missing))},
             )
 
-        for coordinator, tank_id in targets:
-            await _stored_history_change(
-                coordinator.async_set_consumption(
-                    call.data["liters"], call.data.get("daily"), tank_id
-                )
+        await _stored_history_change(
+            coordinator.async_set_consumption(
+                call.data["liters"], call.data.get("daily"), tank_ids
             )
+        )
 
     hass.services.async_register(
         DOMAIN,
@@ -440,16 +443,6 @@ def async_setup_services(hass: HomeAssistant) -> None:
         async_handle_set_consumption,
         schema=SET_CONSUMPTION_SCHEMA,
     )
-
-
-@callback
-def async_unload_services(hass: HomeAssistant) -> None:
-    """Unload BoilerJuice services."""
-    if not hass.services.has_service(DOMAIN, SERVICE_RESET_CONSUMPTION):
-        return
-
-    hass.services.async_remove(DOMAIN, SERVICE_RESET_CONSUMPTION)
-    hass.services.async_remove(DOMAIN, SERVICE_SET_CONSUMPTION)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -490,14 +483,67 @@ async def async_migrate_entry(
 
     if entry.version == 1:
         email = entry.data.get(CONF_EMAIL)
-        hass.config_entries.async_update_entry(
-            entry,
-            unique_id=normalise_email(email) if email else entry.unique_id,
-            version=2,
-        )
+        canonical = normalise_email(email) if email else entry.unique_id
+
+        # Two version-one entries whose emails differ only in case or
+        # whitespace normalise to the same id. Home Assistant refuses the
+        # second one with a "please create a bug report" error and carries
+        # on, so reporting success here advanced a duplicate to version two
+        # and left the pair fighting over one account. Refusing keeps this
+        # entry unloaded, with a repair saying which one to remove.
+        clash = _other_entry_claiming(hass, entry, canonical)
+        if clash is not None:
+            ir.async_create_issue(
+                hass,
+                DOMAIN,
+                f"duplicate_account_{entry.entry_id}",
+                is_fixable=False,
+                severity=ir.IssueSeverity.ERROR,
+                translation_key="duplicate_account",
+                translation_placeholders={
+                    "email": str(email or ""),
+                    "title": clash.title,
+                },
+            )
+            _LOGGER.error(
+                "This BoilerJuice account is already configured under another "
+                "entry, so it cannot be migrated. Remove one of the two"
+            )
+            return False
+
+        ir.async_delete_issue(hass, DOMAIN, f"duplicate_account_{entry.entry_id}")
+        hass.config_entries.async_update_entry(entry, unique_id=canonical, version=2)
         _LOGGER.debug("Migrated the BoilerJuice config entry to version 2")
 
     return True
+
+
+@callback
+def _other_entry_claiming(
+    hass: HomeAssistant, entry: ConfigEntry, unique_id: str | None
+) -> ConfigEntry | None:
+    """Return another BoilerJuice entry that would own `unique_id`.
+
+    An entry that already holds the id always wins. Among entries still on
+    version one, which would all normalise to the same thing, the lowest
+    entry id wins: some rule has to pick, and picking the same one however
+    the entries happen to be ordered is what stops both refusing and neither
+    migrating.
+    """
+    if unique_id is None:
+        return None
+    for other in hass.config_entries.async_entries(DOMAIN):
+        if other.entry_id == entry.entry_id:
+            continue
+        if other.version > 1:
+            if other.unique_id == unique_id:
+                return other
+            continue
+        email = other.data.get(CONF_EMAIL)
+        claimed = normalise_email(email) if email else other.unique_id
+        if claimed == unique_id and other.entry_id < entry.entry_id:
+            return other
+    return None
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: BoilerJuiceConfigEntry) -> bool:

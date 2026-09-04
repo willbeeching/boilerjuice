@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -205,18 +205,21 @@ class BoilerJuiceDataUpdateCoordinator(
         """Return the published state for `tank_id`, if there is one."""
         return (self.data or {}).get(tank_id)
 
-    def tanks_without_readings(self, tank_id: str | None = None) -> list[str]:
+    def tanks_without_readings(
+        self, tank_ids: Iterable[str] | None = None
+    ) -> list[str]:
         """Return the targeted tanks that have nothing to rebase onto.
 
-        `tank_id` of None means the whole account, which is how an entry-wide
-        action arrives. Setting the consumption on a tank with no current
-        reading writes the new total but leaves the reference where it was,
-        so the tank books the gap as consumption the moment it comes back.
+        `tank_ids` of None means the whole account, which is how an
+        entry-wide action arrives. Setting the consumption on a tank with no
+        current reading writes the new total but leaves the reference where
+        it was, so the tank books the gap as consumption the moment it comes
+        back.
         """
         published = self.data or {}
         return [
             tracker.tank_id
-            for tracker in self._selected_trackers(tank_id)
+            for tracker in self._selected_trackers(tank_ids)
             if published.get(tracker.tank_id) is None
         ]
 
@@ -322,10 +325,17 @@ class BoilerJuiceDataUpdateCoordinator(
         """Close the client's session (call on unload)."""
         await self._client.async_close()
 
-    async def async_reset_consumption(self, tank_id: str | None = None) -> None:
-        """Reset one tank, or every tank on the account."""
+    async def async_reset_consumption(
+        self, tank_ids: Iterable[str] | None = None
+    ) -> None:
+        """Reset the named tanks, or every tank on the account.
+
+        Every named tank is reset, written and published in one pass under
+        one lock. Calling this once per tank meant a failure on the second
+        left the first permanently reset.
+        """
         async with self._lock:
-            trackers = self._selected_trackers(tank_id)
+            trackers = self._selected_trackers(tank_ids)
             undo = [(tracker, tracker.snapshot()) for tracker in trackers]
             for tracker in trackers:
                 tracker.reset()
@@ -336,11 +346,26 @@ class BoilerJuiceDataUpdateCoordinator(
                 self._rollback(undo)
                 raise
 
+            # Published from what we now hold, rather than left to the next
+            # poll. A reset is a local fact about stored history, and asking
+            # BoilerJuice to confirm it meant the entities kept the old
+            # total, or went unavailable, whenever the site was down.
+            published = dict(self.data or {})
+            for tracker in trackers:
+                state = published.get(tracker.tank_id)
+                if state is None:
+                    continue
+                updated = tracker.decorate(dict(state), self._kwh_per_litre)
+                updated["last_level_change"] = tracker.last_level_change
+                published[tracker.tank_id] = updated
+            if published:
+                self.async_set_updated_data(published)
+
     async def async_set_consumption(
         self,
         total_litres: float,
         daily_litres: float | None = None,
-        tank_id: str | None = None,
+        tank_ids: Iterable[str] | None = None,
     ) -> None:
         """Set the totals by hand and rebase the references on the last reading.
 
@@ -350,7 +375,7 @@ class BoilerJuiceDataUpdateCoordinator(
         """
         async with self._lock:
             published = dict(self.data or {})
-            trackers = self._selected_trackers(tank_id)
+            trackers = self._selected_trackers(tank_ids)
             missing = [
                 tracker.tank_id
                 for tracker in trackers
@@ -406,12 +431,18 @@ class BoilerJuiceDataUpdateCoordinator(
             tracker.restore(snapshot)
             self._account.tanks[tracker.tank_id] = tracker.state
 
-    def _selected_trackers(self, tank_id: str | None) -> list[TankTracker]:
-        """Return the trackers an operation applies to."""
-        if tank_id is None:
+    def _selected_trackers(self, tank_ids: Iterable[str] | None) -> list[TankTracker]:
+        """Return the trackers an operation applies to.
+
+        None means the whole account. Otherwise the account's own order is
+        kept, and a name we do not track is skipped rather than invented.
+        """
+        if tank_ids is None:
             return list(self._trackers.values())
-        tracker = self._trackers.get(tank_id)
-        return [tracker] if tracker else []
+        wanted = set(tank_ids)
+        return [
+            tracker for tank_id, tracker in self._trackers.items() if tank_id in wanted
+        ]
 
     # ------------------------------------------------------------------
     # Update cycle

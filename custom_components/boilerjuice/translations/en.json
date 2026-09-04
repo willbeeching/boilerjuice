@@ -83,6 +83,10 @@
     }
   },
   "issues": {
+    "duplicate_account": {
+      "title": "Two BoilerJuice entries for the same account",
+      "description": "{email} is configured twice, once here and once as \"{title}\". The two entries differ only in how the address was typed, so they cannot both be upgraded. Delete whichever of the two you do not want, then restart Home Assistant. The one you keep holds its own consumption history."
+    },
     "invalid_stored_data": {
       "title": "BoilerJuice consumption history was reset",
       "description": "The stored BoilerJuice consumption history could not be read and has been discarded, so consumption counting has restarted from zero ({reason}). Current tank readings are unaffected. If you know your previous total, you can restore it with the \"Set consumption\" action."

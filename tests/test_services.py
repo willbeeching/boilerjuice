@@ -667,6 +667,56 @@ async def test_a_boilerjuice_device_with_no_tank_is_a_validation_error(
     assert tracker_of(coordinator_of(entry)).total_litres == 40.0
 
 
+async def test_a_deviceless_entity_on_our_account_is_a_validation_error(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """An entity with no device names no tank, and must not widen."""
+    entry = await setup_account(hass, aioclient_mock)
+    coordinator = coordinator_of(entry)
+    await coordinator.async_set_consumption(40.0)
+
+    registry = er.async_get(hass)
+    orphan = registry.async_get_or_create(
+        "sensor", DOMAIN, "no-device-here", config_entry=entry
+    )
+    assert orphan.device_id is None
+
+    with pytest.raises(ServiceValidationError) as raised:
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_RESET_CONSUMPTION,
+            {"entity_id": orphan.entity_id},
+            blocking=True,
+        )
+
+    assert raised.value.translation_key == "no_boilerjuice_target"
+    assert tracker_of(coordinator).total_litres == 40.0
+
+
+async def test_a_translated_storage_error_keeps_its_own_words(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Only an untranslated failure becomes "could not be saved"."""
+    entry = await setup_account(hass, aioclient_mock)
+    coordinator = coordinator_of(entry)
+
+    already = HomeAssistantError(
+        translation_domain=DOMAIN, translation_key="no_reading_yet"
+    )
+    with (
+        patch.object(type(coordinator), "async_reset_consumption", side_effect=already),
+        pytest.raises(HomeAssistantError) as raised,
+    ):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_RESET_CONSUMPTION,
+            {"entry_id": entry.entry_id},
+            blocking=True,
+        )
+
+    assert raised.value is already
+
+
 @pytest.mark.parametrize(
     ("service", "data"),
     [

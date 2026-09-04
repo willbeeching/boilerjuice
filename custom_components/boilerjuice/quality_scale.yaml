@@ -120,7 +120,8 @@ rules:
       failure to carry the change out - no reading to rebase on, a storage
       write that did not reach the disk - raises HomeAssistantError. Both
       carry translation keys, and neither leaves a half-applied change:
-      trackers are restored and nothing is published.
+      every tank an action names is mutated, written and published under one
+      lock, and a failed write restores all of them and publishes nothing.
   config-entry-unloading:
     status: done
   docs-configuration-parameters:

@@ -383,9 +383,7 @@ class ConsumptionStore:
 
         migrated = await self._async_migrate_from_legacy()
         if migrated is not None:
-            account, reason = migrated
-            await self.async_save(account)
-            return account, reason
+            return migrated
 
         return AccountState(), None
 
@@ -443,16 +441,24 @@ class ConsumptionStore:
             else:
                 account.unassigned = state
 
-            _LOGGER.info(
-                "Migrated BoilerJuice consumption history out of the shared "
-                "storage document into this account's own"
-            )
+            # Written and verified before the legacy slot goes. The other
+            # way round, a write that failed - which Home Assistant's Store
+            # reports by logging and returning - left the destination empty
+            # and the source already deleted, so the account's whole history
+            # was gone. Raising here leaves the shared document intact and
+            # the next start tries again.
+            await self.async_save(account)
 
             del shared[slot]
             if shared:
                 await self._legacy.async_save(shared)
             else:
                 await self._legacy.async_remove()
+
+            _LOGGER.info(
+                "Migrated BoilerJuice consumption history out of the shared "
+                "storage document into this account's own"
+            )
 
             return account, reason
 

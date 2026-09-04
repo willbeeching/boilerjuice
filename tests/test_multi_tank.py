@@ -22,6 +22,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.storage import Store
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
@@ -277,7 +278,7 @@ async def test_excluding_a_tank_keeps_its_history_for_when_it_returns(
 ) -> None:
     """A tank BoilerJuice still lists has not gone away; the user hid it."""
     coordinator = coordinator_of(account)
-    await coordinator.async_set_consumption(40.0, tank_id=FIRST)
+    await coordinator.async_set_consumption(40.0, tank_ids=[FIRST])
     await hass.async_block_till_done()
 
     await reconfigure(hass, account, options={CONF_TANKS: [SECOND]})
@@ -592,7 +593,7 @@ async def test_a_redesigned_listing_page_cannot_erase_the_history(
     from homeassistant.helpers import issue_registry as ir
 
     coordinator = coordinator_of(account)
-    await coordinator.async_set_consumption(40.0, tank_id=FIRST)
+    await coordinator.async_set_consumption(40.0, tank_ids=[FIRST])
     await hass.async_block_till_done()
 
     aioclient_mock.clear_requests()
@@ -632,7 +633,7 @@ async def test_a_removed_tank_keeps_its_history_and_resumes_it(
     )
 
     coordinator = coordinator_of(account)
-    await coordinator.async_set_consumption(90.0, tank_id=SECOND)
+    await coordinator.async_set_consumption(90.0, tank_ids=[SECOND])
     await hass.async_block_till_done()
 
     mock_account(aioclient_mock, ONE_TANK)
@@ -929,7 +930,7 @@ async def test_the_coordinator_refuses_the_same_call_on_its_own(
     await hass.async_block_till_done()
 
     assert coordinator.tanks_without_readings() == [SECOND]
-    assert coordinator.tanks_without_readings(FIRST) == []
+    assert coordinator.tanks_without_readings([FIRST]) == []
 
     with pytest.raises(HomeAssistantError) as raised:
         await coordinator.async_set_consumption(1000.0)
@@ -1001,7 +1002,7 @@ async def test_an_action_and_a_refresh_agree_whichever_order_they_run_in(
         await asyncio.wait_for(refresh, timeout=5)
 
     await asyncio.wait_for(
-        coordinator.async_set_consumption(1234.0, tank_id=FIRST), timeout=5
+        coordinator.async_set_consumption(1234.0, tank_ids=[FIRST]), timeout=5
     )
 
     if action_first:
@@ -1014,3 +1015,96 @@ async def test_an_action_and_a_refresh_agree_whichever_order_they_run_in(
         published = coordinator.data[tank_id]["total_consumption_usable_liters"]
         assert published == tracker_of(coordinator, tank_id).total_litres, tank_id
     assert tracker_of(coordinator, FIRST).total_litres >= 1234.0
+
+
+async def test_two_tanks_on_one_account_are_written_together_or_not_at_all(
+    hass: HomeAssistant, account: MockConfigEntry
+) -> None:
+    """Both tanks, one lock, one write.
+
+    Naming two devices used to reach the coordinator as two calls with two
+    writes, so a failure on the second left the first permanently changed.
+    """
+    from unittest.mock import patch
+
+    from homeassistant.util.file import WriteError
+
+    coordinator = coordinator_of(account)
+    await coordinator.async_set_consumption(40.0, tank_ids=[FIRST])
+    await coordinator.async_set_consumption(90.0, tank_ids=[SECOND])
+
+    devices = []
+    for tank_id in (FIRST, SECOND):
+        device = tank_device(hass, account, tank_id)
+        assert device is not None
+        devices.append(device.id)
+
+    with (
+        patch.object(Store, "_async_write_data", side_effect=WriteError("full")),
+        pytest.raises(HomeAssistantError),
+    ):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_SET_CONSUMPTION,
+            {"liters": 1234.0, "device_id": devices},
+            blocking=True,
+        )
+
+    assert tracker_of(coordinator, FIRST).total_litres == 40.0
+    assert tracker_of(coordinator, SECOND).total_litres == 90.0
+    assert coordinator.data[FIRST]["total_consumption_usable_liters"] == 40.0
+    assert coordinator.data[SECOND]["total_consumption_usable_liters"] == 90.0
+
+
+async def test_two_device_targets_both_take_effect(
+    hass: HomeAssistant, account: MockConfigEntry
+) -> None:
+    """The other half of the same change: naming two tanks reaches both."""
+    coordinator = coordinator_of(account)
+    devices = []
+    for tank_id in (FIRST, SECOND):
+        device = tank_device(hass, account, tank_id)
+        assert device is not None
+        devices.append(device.id)
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_SET_CONSUMPTION,
+        {"liters": 1234.0, "device_id": devices},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    for tank_id in (FIRST, SECOND):
+        assert tracker_of(coordinator, tank_id).total_litres == 1234.0
+
+
+async def test_a_reset_shows_immediately_even_with_the_site_down(
+    hass: HomeAssistant, account: MockConfigEntry, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """A reset is a fact about stored history, not something to go and ask about.
+
+    It persisted the zero and then asked BoilerJuice for fresh readings. With
+    the site down the refresh failed, so the entities kept the old total
+    while the stored total was zero.
+    """
+    coordinator = coordinator_of(account)
+    await coordinator.async_set_consumption(1234.0, tank_ids=[FIRST])
+    await coordinator.async_set_consumption(90.0, tank_ids=[SECOND])
+    assert coordinator.data[FIRST]["total_consumption_usable_liters"] == 1234.0
+
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(LOGIN_URL, exc=TimeoutError("BoilerJuice is down"))
+    aioclient_mock.post(LOGIN_URL, exc=TimeoutError("BoilerJuice is down"))
+
+    device = tank_device(hass, account, FIRST)
+    assert device is not None
+    await hass.services.async_call(
+        DOMAIN, SERVICE_RESET_CONSUMPTION, {"device_id": device.id}, blocking=True
+    )
+    await hass.async_block_till_done()
+
+    assert tracker_of(coordinator, FIRST).total_litres == 0.0
+    assert coordinator.data[FIRST]["total_consumption_usable_liters"] == 0.0
+    # The tank nobody named keeps what it had.
+    assert coordinator.data[SECOND]["total_consumption_usable_liters"] == 90.0

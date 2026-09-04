@@ -233,6 +233,56 @@ async def test_a_restart_resumes_from_the_stored_totals(
 # --- migration from the shared v1 document --------------------------------
 
 
+async def test_a_failed_migration_leaves_the_legacy_history_where_it_is(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    """The only copy must not be deleted before the new one is on disk.
+
+    The legacy slot was removed first, so a destination write that failed -
+    which Home Assistant reports by logging and returning - left nothing
+    anywhere. Raising with the shared document intact means the next start
+    tries again.
+    """
+    from unittest.mock import patch
+
+    from custom_components.boilerjuice.storage import (
+        LEGACY_STORAGE_KEY,
+        StorageWriteFailed,
+    )
+    from homeassistant.helpers.storage import Store
+    from homeassistant.util.file import WriteError
+
+    entry = make_entry(hass)
+    hass_storage[LEGACY_STORAGE_KEY] = {
+        "version": 1,
+        "data": {
+            entry.entry_id: {
+                "total_consumption_liters": 330.0,
+                "total_consumption_kwh": 3415.5,
+                "consumption_history_with_dates": [["2026-08-01T00:00:00+01:00", 1.5]],
+            }
+        },
+    }
+
+    store = ConsumptionStore(hass, entry.entry_id, None)
+
+    with (
+        patch.object(Store, "_async_write_data", side_effect=WriteError("full")),
+        pytest.raises(StorageWriteFailed),
+    ):
+        await store.async_load()
+
+    slot = hass_storage[LEGACY_STORAGE_KEY]["data"][entry.entry_id]
+    assert slot["total_consumption_liters"] == 330.0
+
+    # And the retry, once the disk is well again, carries it across.
+    account, reason = await store.async_load()
+    assert reason is None
+    assert account.unassigned is not None
+    assert account.unassigned.total_litres == 330.0
+    assert LEGACY_STORAGE_KEY not in hass_storage
+
+
 async def test_an_entry_keyed_v1_slot_is_migrated(
     hass: HomeAssistant, hass_storage
 ) -> None:
