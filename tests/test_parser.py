@@ -625,9 +625,34 @@ def test_json_listing_an_object_without_tanks_is_a_parse_error() -> None:
     with pytest.raises(BoilerJuiceParseError) as caught:
         parse_tank_ids('{"status": "ok", "count": 2}')
 
-    assert "page shape" in str(caught.value)
-    assert "status" in str(caught.value)
-    assert "ok" not in str(caught.value)
+    message = str(caught.value)
+    assert "page shape" in message
+    assert "key_count" in message
+    assert "ok" not in message
+    assert "status" not in message
+
+
+def test_json_listing_of_objects_without_ids_is_not_an_empty_account() -> None:
+    """A list we cannot identify is unreadable, not proof the tanks are gone."""
+    with pytest.raises(BoilerJuiceParseError) as caught:
+        parse_tank_ids('[{"name": "Garden"}]')
+
+    assert "could not all be identified" in str(caught.value)
+    assert "Garden" not in str(caught.value)
+    with pytest.raises(BoilerJuiceParseError):
+        parse_tank_ids('{"tanks": [{"name": "Garden"}]}')
+    assert parse_tank_ids("[]") == []
+
+
+def test_json_listing_of_a_partially_identified_list_is_not_authoritative() -> None:
+    """One readable id does not make the unreadables authoritatively gone."""
+    with pytest.raises(BoilerJuiceParseError) as caught:
+        parse_tank_ids('[{"id": 123456}, {"name": "unidentified tank"}]')
+
+    message = str(caught.value)
+    assert "could not all be identified" in message
+    assert "123456" not in message
+    assert "unidentified" not in message
 
 
 def test_json_sign_in_error_is_an_auth_error() -> None:
@@ -692,6 +717,36 @@ def test_json_tank_picks_the_requested_id_from_a_list() -> None:
     assert reading.volume_litres == 2000
 
 
+def test_json_tank_singleton_with_a_different_id_raises() -> None:
+    with pytest.raises(BoilerJuiceParseError) as caught:
+        parse_tank_page('{"id": 654321, "percentage": 50}', "123456")
+
+    assert "not the one requested" in str(caught.value)
+    assert "654321" not in str(caught.value)
+
+
+def test_json_tank_singleton_without_an_id_is_the_requested_tank() -> None:
+    reading = parse_tank_page('[{"percentage": 50, "litres": 1000}]', "123456")
+
+    assert reading.tank_id == "123456"
+    assert reading.level_percentage == 50
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"id": "not-a-tank", "percentage": 50}',
+        '{"id": null, "percentage": 50}',
+        '{"id": "", "percentage": 50}',
+    ],
+)
+def test_json_tank_singleton_with_an_unreadable_id_raises(body: str) -> None:
+    with pytest.raises(BoilerJuiceParseError) as caught:
+        parse_tank_page(body, "123456")
+
+    assert "not-a-tank" not in str(caught.value)
+
+
 def test_json_tank_without_a_measurement_raises() -> None:
     with pytest.raises(BoilerJuiceParseError) as caught:
         parse_tank_page('{"id": 123456, "name": "Garden Tank"}', "123456")
@@ -714,15 +769,39 @@ def test_json_shape_carries_no_values() -> None:
         "will@together.agency",
         "998877",
         "Sycamore",
+        "email",
     ):
         assert secret not in serialised, f"the JSON shape leaked {secret!r}"
 
     assert parser.describe_json_shape(data) == {
         "is_json": True,
         "type": "object",
-        "keys": ["email", "name", "tanks"],
-        "nested": {"email": "string", "name": "string", "tanks": "list"},
+        "key_count": 3,
+        "recognised_keys": ["name", "tanks"],
+        "nested": {"name": "string", "tanks": "list"},
     }
+
+
+def test_json_shape_does_not_echo_identifier_keys() -> None:
+    """Account-specific values used as keys must not reach a diagnostic."""
+    data = {998877: {"email": "will@together.agency"}, "name": "Garden"}
+    serialised = json.dumps(parser.describe_json_shape(data))
+
+    assert "998877" not in serialised
+    assert "will@together.agency" not in serialised
+    assert "Garden" not in serialised
+    assert parser.describe_json_shape(data)["recognised_keys"] == ["name"]
+
+
+def test_json_shape_caps_the_recognised_keys_it_names() -> None:
+    payload = dict.fromkeys(parser._RECOGNISED_JSON_KEYS, 1)
+    payload["not_a_field"] = True
+    shape = parser.describe_json_shape(payload)
+
+    assert shape["key_count"] == len(parser._RECOGNISED_JSON_KEYS) + 1
+    assert len(shape["recognised_keys"]) == parser._MAX_SHAPE_KEYS
+    assert set(shape["recognised_keys"]) <= parser._RECOGNISED_JSON_KEYS
+    assert "not_a_field" not in json.dumps(shape)
 
 
 def test_broken_json_raises_without_quoting_the_body() -> None:
@@ -736,6 +815,9 @@ def test_looks_like_json_sign_in() -> None:
     assert parser.looks_like_json_sign_in(
         '{"error":"You need to sign in or sign up before continuing."}'
     )
+    assert parser.looks_like_json_sign_in(
+        '\ufeff{"error":"You need to sign in or sign up before continuing."}'
+    )
     assert parser.looks_like_json_sign_in("<html></html>") is False
     assert parser.looks_like_json_sign_in("{not-json") is False
     assert parser.looks_like_json_sign_in("[1, 2]") is False
@@ -746,7 +828,8 @@ def test_describe_json_shape_of_a_list_and_a_scalar() -> None:
         "is_json": True,
         "type": "list",
         "length": 3,
-        "item_keys": ["id", "name"],
+        "item_key_count": 2,
+        "recognised_item_keys": ["id", "name"],
     }
     assert parser.describe_json_shape(7) == {"is_json": True, "type": "number"}
     assert parser.describe_json_shape(None) == {"is_json": True, "type": "null"}
@@ -800,8 +883,12 @@ def test_json_tank_reads_oil_type_object_and_numeric_model_id() -> None:
     assert reading.shape is None
 
 
-def test_json_listing_skips_objects_without_an_id() -> None:
-    assert parse_tank_ids('[{"name": "orphan"}, {"id": 123456}]') == ["123456"]
+def test_json_listing_of_an_object_with_an_invalid_id_is_not_authoritative() -> None:
+    with pytest.raises(BoilerJuiceParseError) as caught:
+        parse_tank_ids('[{"id": 123456}, {"id": "not-a-tank"}]')
+
+    assert "123456" not in str(caught.value)
+    assert "not-a-tank" not in str(caught.value)
 
 
 def test_json_listing_accepts_a_user_tanks_wrapper() -> None:
