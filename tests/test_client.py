@@ -80,10 +80,10 @@ async def test_a_lapsed_session_is_renewed_once_and_the_fetch_retried(
     bodies = iter([load_fixture("login.html"), tank_page(percentage=80, litres=2000)])
     fetch = client._async_get
 
-    async def bounce_once(url: str, description: str):
+    async def bounce_once(url: str, description: str, **kwargs):
         if url == TANK_URL:
             return next(bodies), url
-        return await fetch(url, description)
+        return await fetch(url, description, **kwargs)
 
     client._async_get = bounce_once
 
@@ -125,6 +125,40 @@ async def test_http_statuses_map_onto_distinct_errors(
 
     with pytest.raises(expected):
         await client.async_fetch_tank("123456")
+
+
+async def test_a_chunked_body_is_read_in_full() -> None:
+    """content.read(n) on the live site returned only the HTML head.
+
+    That truncated page had scripts and no tank links, so we reported a
+    JavaScript rewrite. response.read() waits for the decoded payload.
+    """
+
+    class FakeStream:
+        def __init__(self, partial: bytes) -> None:
+            self.partial = partial
+
+        async def read(self, _n: int = -1) -> bytes:
+            return self.partial
+
+    class FakeResponse:
+        charset = "utf-8"
+
+        def __init__(self) -> None:
+            self._full = (
+                b"<!DOCTYPE html><html><head>"
+                b'<script src="/app.js"></script></head>'
+                b'<body><a href="/uk/users/tanks/123456">Tank</a></body></html>'
+            )
+            self.content = FakeStream(self._full.split(b"</head>")[0])
+
+        async def read(self) -> bytes:
+            return self._full
+
+    text = await BoilerJuiceClient._read_text(FakeResponse(), "tank page")
+
+    assert "tanks/123456" in text
+    assert text.count("<script") == 1
 
 
 async def test_an_oversized_response_is_refused(
@@ -473,3 +507,88 @@ async def test_a_transport_error_does_not_carry_the_tank_id(
     assert isinstance(cause, RedactedTransportError)
     assert "ClientResponseError" in str(cause)
     assert "123456" not in str(cause)
+
+
+# --- the JavaScript app returns JSON --------------------------------------
+
+
+async def test_a_javascript_shell_falls_back_to_the_json_url(
+    aioclient_mock: AiohttpClientMocker, client: BoilerJuiceClient
+) -> None:
+    """Accept: application/json is ignored; the HTML is an empty JS app."""
+    mock_sign_in(aioclient_mock)
+    aioclient_mock.get(
+        TANKS_URL,
+        text=(
+            "<!DOCTYPE html><html><head>"
+            '<script src="/assets/application.js"></script>'
+            "</head><body><div id='app'></div></body></html>"
+        ),
+    )
+    aioclient_mock.get(
+        f"{TANKS_URL}.json",
+        text='[{"id": 123456, "name": "Garden"}]',
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert await client.async_list_tank_ids() == ["123456"]
+
+
+async def test_listing_tanks_reads_json(
+    aioclient_mock: AiohttpClientMocker, client: BoilerJuiceClient
+) -> None:
+    mock_sign_in(aioclient_mock)
+    aioclient_mock.get(
+        TANKS_URL,
+        text='[{"id": 123456, "name": "Garden"}, {"id": 789012, "name": "Barn"}]',
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert await client.async_list_tank_ids() == ["123456", "789012"]
+
+
+async def test_fetching_a_tank_reads_json(
+    aioclient_mock: AiohttpClientMocker, client: BoilerJuiceClient
+) -> None:
+    mock_sign_in(aioclient_mock)
+    aioclient_mock.get(
+        TANK_URL,
+        text='{"id": 123456, "percentage": 80, "litres": 2000}',
+        headers={"Content-Type": "application/json"},
+    )
+
+    reading = await client.async_fetch_tank("123456")
+
+    assert reading.volume_litres == 2000
+    assert reading.level_percentage == 80
+
+
+async def test_a_json_401_is_renewed_once_and_the_fetch_retried(
+    aioclient_mock: AiohttpClientMocker, client: BoilerJuiceClient
+) -> None:
+    """The JSON API answers a lapsed session with 401, not the login page."""
+    mock_sign_in(aioclient_mock)
+
+    outcomes = iter(
+        [
+            BoilerJuiceAuthError("BoilerJuice refused access to the tank page"),
+            ('{"id": 123456, "percentage": 80, "litres": 2000}', TANK_URL),
+        ]
+    )
+    fetch = client._async_get
+
+    async def bounce_once(url: str, description: str, **kwargs):
+        if url == TANK_URL:
+            item = next(outcomes)
+            if isinstance(item, Exception):
+                raise item
+            return item
+        return await fetch(url, description, **kwargs)
+
+    client._async_get = bounce_once
+
+    reading = await client.async_fetch_tank("123456")
+
+    assert reading.volume_litres == 2000
+    logins = [call for call in aioclient_mock.mock_calls if call[0] == "POST"]
+    assert len(logins) == 2

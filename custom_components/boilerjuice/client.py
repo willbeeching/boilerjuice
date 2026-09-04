@@ -29,6 +29,9 @@ from .errors import (
 )
 from .models import TankReading
 from .parser import (
+    looks_like_javascript_shell,
+    looks_like_json,
+    looks_like_json_sign_in,
     looks_like_login_page,
     parse_price,
     parse_tank_ids,
@@ -143,15 +146,28 @@ class BoilerJuiceClient:
 
     @staticmethod
     async def _read_text(response: aiohttp.ClientResponse, description: str) -> str:
-        """Read a bounded amount of body text from `response`."""
-        raw = await response.content.read(MAX_RESPONSE_BYTES + 1)
+        """Read a bounded amount of body text from `response`.
+
+        Must use ``response.read()``, not ``response.content.read(n)``.
+        On the live site the body is chunked and gzipped; a sized stream
+        read returned only the ``<head>`` — scripts, no forms, no tank
+        links — which we then described as a JavaScript app rewrite.
+        ``read()`` waits for the decoded payload, then we enforce the cap.
+        """
+        raw = await response.read()
         if len(raw) > MAX_RESPONSE_BYTES:
             raise BoilerJuiceParseError(
                 f"The {description} was larger than {MAX_RESPONSE_BYTES} bytes"
             )
         return raw.decode(response.charset or "utf-8", errors="replace")
 
-    async def _async_get(self, url: str, description: str) -> tuple[str, str]:
+    async def _async_get(
+        self,
+        url: str,
+        description: str,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[str, str]:
         """GET `url`, returning (body, final URL).
 
         Redirects are followed by hand, one validated hop at a time. aiohttp
@@ -164,7 +180,9 @@ class BoilerJuiceClient:
         target = yarl.URL(url)
         for _ in range(MAX_REDIRECTS + 1):
             try:
-                async with self.session.get(target, allow_redirects=False) as response:
+                async with self.session.get(
+                    target, allow_redirects=False, headers=headers
+                ) as response:
                     if response.status in REDIRECT_STATUSES:
                         location = response.headers.get("Location")
                     else:
@@ -282,33 +300,81 @@ class BoilerJuiceClient:
             )
         return target
 
-    async def _async_get_signed_in(self, url: str, description: str) -> str:
+    async def _async_get_signed_in(
+        self, url: str, description: str, *, accept_json: bool = False
+    ) -> str:
         """GET `url` while signed in, renewing the session once if it lapsed.
 
         BoilerJuice expires sessions on its own schedule, so one silent
         re-sign-in is normal operation rather than an error worth surfacing.
+
+        A lapsed HTML session comes back as the sign-in page. A lapsed
+        JSON session comes back as HTTP 401. Both are retried once.
         """
+        headers = {"Accept": "application/json"} if accept_json else None
+
         if not self._signed_in:
             await self._async_sign_in()
 
-        body, _ = await self._async_get(url, description)
-        if not looks_like_login_page(body):
+        body, expired = await self._async_signed_in_once(url, description, headers)
+        if not expired:
             return body
 
         _LOGGER.debug("The BoilerJuice session lapsed; signing in again")
         self._signed_in = False
         await self._async_sign_in()
 
-        body, _ = await self._async_get(url, description)
-        if looks_like_login_page(body):
+        body, expired = await self._async_signed_in_once(url, description, headers)
+        if expired:
             raise BoilerJuiceAuthError(
-                "BoilerJuice kept returning the sign-in page after a fresh login"
+                "BoilerJuice kept refusing access after a fresh login"
             )
         return body
 
+    async def _async_signed_in_once(
+        self,
+        url: str,
+        description: str,
+        headers: dict[str, str] | None,
+    ) -> tuple[str, bool]:
+        """GET once. Return (body, True) when the session looks expired."""
+        try:
+            body, _ = await self._async_get(url, description, headers=headers)
+        except BoilerJuiceAuthError:
+            return "", True
+        return body, looks_like_login_page(body) or looks_like_json_sign_in(body)
+
+    async def _async_get_tank_document(self, url: str, description: str) -> str:
+        """GET a tank document as HTML, falling back to the JSON twin.
+
+        Asking the HTML path for ``Accept: application/json`` is a 500 on
+        a signed-in session. The HTML page still carries the tanks. When
+        that page is only a JavaScript shell, the same path with ``.json``
+        is the API — and that request is allowed to ask for JSON.
+        """
+        body = await self._async_get_signed_in(url, description)
+        if looks_like_json(body) or not looks_like_javascript_shell(body):
+            return body
+        if url.endswith(".json"):
+            return body
+        json_url = f"{url}.json"
+        try:
+            json_body = await self._async_get_signed_in(
+                json_url, description, accept_json=True
+            )
+        except (
+            BoilerJuiceAuthError,
+            BoilerJuiceConnectionError,
+            BoilerJuiceParseError,
+        ):
+            return body
+        return json_body if looks_like_json(json_body) else body
+
     async def async_list_tank_ids(self) -> list[str]:
         """Return every tank id on the account, in page order."""
-        body = await self._async_get_signed_in(TANKS_URL, "BoilerJuice tanks page")
+        body = await self._async_get_tank_document(
+            TANKS_URL, "BoilerJuice tanks page"
+        )
         return parse_tank_ids(body)
 
     async def async_fetch_tank(self, tank_id: str | None = None) -> TankReading:
@@ -330,7 +396,7 @@ class BoilerJuiceClient:
         if canonical is None:
             raise BoilerJuiceParseError("Refusing to use a non-numeric tank id")
 
-        body = await self._async_get_signed_in(
+        body = await self._async_get_tank_document(
             f"{TANKS_URL}/{canonical}/edit", "BoilerJuice tank page"
         )
         return parse_tank_page(body, canonical)
