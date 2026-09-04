@@ -637,11 +637,22 @@ def test_json_listing_of_objects_without_ids_is_not_an_empty_account() -> None:
     with pytest.raises(BoilerJuiceParseError) as caught:
         parse_tank_ids('[{"name": "Garden"}]')
 
-    assert "readable tank id" in str(caught.value)
+    assert "could not all be identified" in str(caught.value)
     assert "Garden" not in str(caught.value)
     with pytest.raises(BoilerJuiceParseError):
         parse_tank_ids('{"tanks": [{"name": "Garden"}]}')
     assert parse_tank_ids("[]") == []
+
+
+def test_json_listing_of_a_partially_identified_list_is_not_authoritative() -> None:
+    """One readable id does not make the unreadables authoritatively gone."""
+    with pytest.raises(BoilerJuiceParseError) as caught:
+        parse_tank_ids('[{"id": 123456}, {"name": "unidentified tank"}]')
+
+    message = str(caught.value)
+    assert "could not all be identified" in message
+    assert "123456" not in message
+    assert "unidentified" not in message
 
 
 def test_json_sign_in_error_is_an_auth_error() -> None:
@@ -719,6 +730,21 @@ def test_json_tank_singleton_without_an_id_is_the_requested_tank() -> None:
 
     assert reading.tank_id == "123456"
     assert reading.level_percentage == 50
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"id": "not-a-tank", "percentage": 50}',
+        '{"id": null, "percentage": 50}',
+        '{"id": "", "percentage": 50}',
+    ],
+)
+def test_json_tank_singleton_with_an_unreadable_id_raises(body: str) -> None:
+    with pytest.raises(BoilerJuiceParseError) as caught:
+        parse_tank_page(body, "123456")
+
+    assert "not-a-tank" not in str(caught.value)
 
 
 def test_json_tank_without_a_measurement_raises() -> None:
@@ -857,8 +883,12 @@ def test_json_tank_reads_oil_type_object_and_numeric_model_id() -> None:
     assert reading.shape is None
 
 
-def test_json_listing_skips_objects_without_an_id() -> None:
-    assert parse_tank_ids('[{"name": "orphan"}, {"id": 123456}]') == ["123456"]
+def test_json_listing_of_an_object_with_an_invalid_id_is_not_authoritative() -> None:
+    with pytest.raises(BoilerJuiceParseError) as caught:
+        parse_tank_ids('[{"id": 123456}, {"id": "not-a-tank"}]')
+
+    assert "123456" not in str(caught.value)
+    assert "not-a-tank" not in str(caught.value)
 
 
 def test_json_listing_accepts_a_user_tanks_wrapper() -> None:

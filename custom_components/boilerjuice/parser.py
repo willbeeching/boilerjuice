@@ -560,6 +560,11 @@ def _first_raw(objects: list[dict[str, Any]], keys: tuple[str, ...]) -> Any:
     return None
 
 
+def _has_tank_id_key(obj: dict[str, Any]) -> bool:
+    """Return True when a tank-id field is present, even if unreadable."""
+    return any(key in obj for key in _JSON_ID_KEYS)
+
+
 def _shape_from_json(value: Any) -> str | None:
     """Return a known tank shape, formatted the way the HTML parser does."""
     if not isinstance(value, str):
@@ -602,17 +607,22 @@ def _parse_tank_ids_json(body: str) -> list[str]:
             f"(page shape: {describe_json_shape(data)})"
         )
     tank_ids: list[str] = []
+    unreadable = False
     for obj in objects:
         tank_id = validate_tank_id(_first_raw([obj], _JSON_ID_KEYS))
-        if tank_id is not None and tank_id not in tank_ids:
+        if tank_id is None:
+            # Track this apart from deduplication. A sibling we cannot
+            # name is not "absent"; treating the rest as complete would
+            # retire that tank after three polls.
+            unreadable = True
+            continue
+        if tank_id not in tank_ids:
             tank_ids.append(tank_id)
-    if objects and not tank_ids:
-        # A non-empty list of objects we cannot identify is unreadable,
-        # not empty. Returning [] here would retire every tank device.
+    if unreadable:
         raise BoilerJuiceParseError(
-            "The BoilerJuice tanks JSON listed objects but none had a "
-            "readable tank id; refusing to treat it as proof that the "
-            f"tanks are gone (page shape: {describe_json_shape(data)})"
+            "The BoilerJuice tanks JSON listed objects that could not all "
+            "be identified; refusing to treat the listing as complete "
+            f"(page shape: {describe_json_shape(data)})"
         )
     return tank_ids
 
@@ -642,11 +652,9 @@ def _parse_tank_json(body: str, tank_id: str) -> TankReading:
     ]
     if matches:
         chosen = matches[0]
-    elif len(objects) == 1 and (
-        validate_tank_id(_first_raw([objects[0]], _JSON_ID_KEYS)) is None
-    ):
-        # A singleton document with no readable id is the page we asked
-        # for. A readable id that names a different tank is not.
+    elif len(objects) == 1 and not _has_tank_id_key(objects[0]):
+        # A singleton with no id field is the document we asked for.
+        # An explicit id that is invalid or names another tank is not.
         chosen = objects[0]
     else:
         raise BoilerJuiceParseError(
