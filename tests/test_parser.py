@@ -71,6 +71,20 @@ def test_login_page_raises_auth_rather_than_parse_error() -> None:
         parse_tank_page(load_fixture("login.html"), "123456")
 
 
+def test_parses_the_renamed_name_and_oil_type_fields() -> None:
+    """The edit page now uses id=name and id=oil_type_id."""
+    html = (
+        '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
+        '<input id="name" name="name" value="Garden Tank">'
+        '<select id="oil_type_id"><option>Gas Oil</option>'
+        "<option selected>Kerosene</option></select>"
+    )
+    reading = parse_tank_page(html, "123456")
+
+    assert reading.name == "Garden Tank"
+    assert reading.oil_type == "Kerosene"
+
+
 def test_partial_page_keeps_the_level_and_omits_the_volume() -> None:
     """A level with no volume is a usable reading; the volume must stay absent.
 
@@ -560,3 +574,262 @@ def test_an_unreadable_tanks_page_reports_its_shape() -> None:
         parse_tank_ids(CHALLENGE)
 
     assert "cloudflare" in str(caught.value)
+
+
+# --- the JavaScript app's JSON API ----------------------------------------
+
+JS_SHELL = """
+<!DOCTYPE html>
+<html><head><title>Your tanks</title>
+<script src="/assets/application.js"></script>
+<script src="/assets/tanks.js"></script>
+</head><body><div id="app"></div></body></html>
+"""
+
+
+def test_a_javascript_shell_is_recognised() -> None:
+    assert parser.looks_like_javascript_shell(JS_SHELL)
+    assert parser.looks_like_javascript_shell(load_fixture("tanks_list.html")) is False
+    assert parser.looks_like_javascript_shell(load_fixture("login.html")) is False
+
+
+def test_a_javascript_shell_is_not_an_empty_account() -> None:
+    """The tanks page is now a JS app: 15 scripts, no links, no forms.
+
+    Treating that as "no tanks" would retire every device on the account.
+    """
+    with pytest.raises(BoilerJuiceParseError) as caught:
+        parse_tank_ids(JS_SHELL)
+
+    assert "page shape" in str(caught.value)
+    assert "tank_links" in str(caught.value)
+
+
+def test_json_listing_returns_ids_in_order() -> None:
+    body = json.dumps(
+        [
+            {"id": 123456, "name": "Garden"},
+            {"id": 789012, "name": "Barn"},
+            {"id": 123456, "name": "Garden again"},
+        ]
+    )
+
+    assert parse_tank_ids(body) == ["123456", "789012"]
+
+
+def test_json_listing_accepts_a_wrapped_empty_list() -> None:
+    assert parse_tank_ids('{"tanks": []}') == []
+
+
+def test_json_listing_an_object_without_tanks_is_a_parse_error() -> None:
+    with pytest.raises(BoilerJuiceParseError) as caught:
+        parse_tank_ids('{"status": "ok", "count": 2}')
+
+    assert "page shape" in str(caught.value)
+    assert "status" in str(caught.value)
+    assert "ok" not in str(caught.value)
+
+
+def test_json_sign_in_error_is_an_auth_error() -> None:
+    with pytest.raises(BoilerJuiceAuthError):
+        parse_tank_ids('{"error":"You need to sign in or sign up before continuing."}')
+
+
+def test_json_tank_parses_a_flat_object() -> None:
+    body = json.dumps(
+        {
+            "id": 123456,
+            "name": "Garden Tank",
+            "percentage": 62.5,
+            "litres": 1562,
+            "tank_size": 2500,
+            "internal_height": 120,
+            "shape": "horizontal_cylinder",
+            "oil_type": "Kerosene",
+            "model": "H2500T",
+            "manufacturer": "Harlequin",
+        }
+    )
+    reading = parse_tank_page(body, "123456")
+
+    assert reading.tank_id == "123456"
+    assert reading.level_percentage == 62.5
+    assert reading.volume_litres == 1562
+    assert reading.capacity_litres == 2500
+    assert reading.height_cm == 120
+    assert reading.name == "Garden Tank"
+    assert reading.shape == "Horizontal Cylinder"
+    assert reading.oil_type == "Kerosene"
+    assert reading.model == "H2500T"
+    assert reading.manufacturer == "Harlequin"
+
+
+def test_json_tank_reads_a_nested_latest_reading() -> None:
+    body = json.dumps(
+        {
+            "id": 123456,
+            "name": "Garden Tank",
+            "latest_reading": {"percentage": 40, "litres": 1000},
+        }
+    )
+    reading = parse_tank_page(body, "123456")
+
+    assert reading.level_percentage == 40
+    assert reading.volume_litres == 1000
+    assert reading.name == "Garden Tank"
+
+
+def test_json_tank_picks_the_requested_id_from_a_list() -> None:
+    body = json.dumps(
+        [
+            {"id": 111, "percentage": 10, "litres": 100},
+            {"id": 123456, "percentage": 80, "litres": 2000},
+        ]
+    )
+    reading = parse_tank_page(body, "123456")
+
+    assert reading.level_percentage == 80
+    assert reading.volume_litres == 2000
+
+
+def test_json_tank_without_a_measurement_raises() -> None:
+    with pytest.raises(BoilerJuiceParseError) as caught:
+        parse_tank_page('{"id": 123456, "name": "Garden Tank"}', "123456")
+
+    assert "neither an oil level nor an oil volume" in str(caught.value)
+    assert "Garden Tank" not in str(caught.value)
+
+
+def test_json_shape_carries_no_values() -> None:
+    data = {
+        "name": "Wilhelmina Bracegirdle",
+        "email": "will@together.agency",
+        "tanks": [{"id": 998877, "address": "12 Sycamore Lane"}],
+    }
+    serialised = json.dumps(parser.describe_json_shape(data))
+
+    for secret in (
+        "Wilhelmina",
+        "Bracegirdle",
+        "will@together.agency",
+        "998877",
+        "Sycamore",
+    ):
+        assert secret not in serialised, f"the JSON shape leaked {secret!r}"
+
+    assert parser.describe_json_shape(data) == {
+        "is_json": True,
+        "type": "object",
+        "keys": ["email", "name", "tanks"],
+        "nested": {"email": "string", "name": "string", "tanks": "list"},
+    }
+
+
+def test_broken_json_raises_without_quoting_the_body() -> None:
+    with pytest.raises(BoilerJuiceParseError) as caught:
+        parse_tank_ids('{"name": "Wilhelmina",')
+
+    assert "Wilhelmina" not in str(caught.value)
+
+
+def test_looks_like_json_sign_in() -> None:
+    assert parser.looks_like_json_sign_in(
+        '{"error":"You need to sign in or sign up before continuing."}'
+    )
+    assert parser.looks_like_json_sign_in("<html></html>") is False
+    assert parser.looks_like_json_sign_in("{not-json") is False
+    assert parser.looks_like_json_sign_in("[1, 2]") is False
+
+
+def test_describe_json_shape_of_a_list_and_a_scalar() -> None:
+    assert parser.describe_json_shape([{"id": 1}, "skip", {"name": "x"}]) == {
+        "is_json": True,
+        "type": "list",
+        "length": 3,
+        "item_keys": ["id", "name"],
+    }
+    assert parser.describe_json_shape(7) == {"is_json": True, "type": "number"}
+    assert parser.describe_json_shape(None) == {"is_json": True, "type": "null"}
+    assert parser.describe_json_shape(True) == {"is_json": True, "type": "boolean"}
+
+
+def test_json_tank_sign_in_error_is_an_auth_error() -> None:
+    with pytest.raises(BoilerJuiceAuthError):
+        parse_tank_page(
+            '{"error":"You need to sign in or sign up before continuing."}',
+            "123456",
+        )
+
+
+def test_json_tank_refuses_a_non_numeric_id() -> None:
+    with pytest.raises(BoilerJuiceParseError):
+        parse_tank_page('{"id": 1, "percentage": 50}', "../admin")
+
+
+def test_json_tank_unrecognised_payload_raises() -> None:
+    with pytest.raises(BoilerJuiceParseError) as caught:
+        parse_tank_page("[1, 2, 3]", "123456")
+
+    assert "page shape" in str(caught.value)
+
+
+def test_json_tank_list_without_the_requested_id_raises() -> None:
+    with pytest.raises(BoilerJuiceParseError):
+        parse_tank_page(
+            '[{"id": 111, "percentage": 10}, {"id": 222, "percentage": 20}]',
+            "123456",
+        )
+
+
+def test_json_tank_reads_oil_type_object_and_numeric_model_id() -> None:
+    reading = parse_tank_page(
+        json.dumps(
+            {
+                "id": 123456,
+                "percentage": 50,
+                "oil_type": {"name": "Kerosene"},
+                "model_id": 42,
+                "shape": "not-a-shape",
+            }
+        ),
+        "123456",
+    )
+
+    assert reading.oil_type == "Kerosene"
+    assert reading.model_id == "42"
+    assert reading.shape is None
+
+
+def test_json_listing_skips_objects_without_an_id() -> None:
+    assert parse_tank_ids('[{"name": "orphan"}, {"id": 123456}]') == ["123456"]
+
+
+def test_json_listing_accepts_a_user_tanks_wrapper() -> None:
+    assert parse_tank_ids('{"user_tanks": [{"id": 7}]}') == ["7"]
+
+
+def test_json_with_a_bom_still_parses() -> None:
+    assert parse_tank_ids('\ufeff{"tanks": []}') == []
+
+
+def test_an_empty_account_page_is_not_a_javascript_shell() -> None:
+    assert (
+        parser.looks_like_javascript_shell(load_fixture("tanks_list_empty.html"))
+        is False
+    )
+    assert parser.looks_like_javascript_shell('[{"id": 1}]') is False
+
+
+def test_json_reads_a_reading_two_objects_down() -> None:
+    reading = parse_tank_page(
+        json.dumps(
+            {
+                "id": 123456,
+                "monitor": {"latest_reading": {"percentage": 33, "litres": 800}},
+            }
+        ),
+        "123456",
+    )
+
+    assert reading.level_percentage == 33
+    assert reading.volume_litres == 800
