@@ -18,6 +18,7 @@ from custom_components.boilerjuice.const import (
     TANKS_URL,
 )
 from custom_components.boilerjuice.coordinator import MISSING_LISTINGS_BEFORE_REMOVAL
+from custom_components.boilerjuice.storage import StorageWriteFailed
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
@@ -1456,3 +1457,52 @@ async def test_an_action_still_running_when_the_account_closes_writes_nothing(
     assert raised.value.translation_key == "save_failed"
     assert tracker_of(coordinator, FIRST).total_litres == 0.0
     assert coordinator.data[FIRST]["total_consumption_usable_liters"] == 0.0
+
+
+async def test_a_save_already_in_flight_when_the_account_goes_is_taken_back(
+    hass: HomeAssistant,
+    account: MockConfigEntry,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage,
+) -> None:
+    """No check placed in front of the write can catch this one.
+
+    The removal lands during the write itself, whatever was tested
+    beforehand, so the document reappeared after the entry that owned it had
+    gone. The write is taken back afterwards instead, which gives the same
+    answer whichever order the two happen in.
+    """
+    import asyncio
+    from unittest.mock import patch
+
+    coordinator = coordinator_of(account)
+    key = f"{DOMAIN}.{account.entry_id}"
+    assert key in hass_storage
+
+    parked = asyncio.Event()
+    gate = asyncio.Event()
+    store = coordinator._store
+    assert store is not None
+    real_save = store.async_save
+
+    async def slow_save(state: object) -> None:
+        parked.set()
+        await gate.wait()
+        await real_save(state)  # type: ignore[arg-type]
+
+    store.async_save = slow_save  # type: ignore[method-assign]
+
+    action = hass.async_create_task(coordinator.async_set_consumption(1234.0))
+    await asyncio.wait_for(parked.wait(), timeout=5)
+
+    with patch("custom_components.boilerjuice.coordinator.CLOSE_TIMEOUT_SECONDS", 0.01):
+        assert await hass.config_entries.async_remove(account.entry_id)
+    await asyncio.sleep(0)
+    assert key not in hass_storage
+
+    gate.set()
+    with pytest.raises(StorageWriteFailed):
+        await asyncio.wait_for(action, timeout=5)
+    await asyncio.sleep(0)
+
+    assert key not in hass_storage

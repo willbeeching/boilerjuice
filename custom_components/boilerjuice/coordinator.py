@@ -337,19 +337,36 @@ class BoilerJuiceDataUpdateCoordinator(
         """Return the repair issue id for this entry's storage."""
         return f"invalid_stored_data_{self._entry_id}"
 
+    @property
+    def _storage_key(self) -> str:
+        """Return this account's storage key, for reporting a refused write."""
+        return f"{DOMAIN}.{self._entry_id}"
+
     async def _async_persist(self) -> None:
         """Write the current state. Callers hold the lock.
 
         Never writes before a successful load: doing so would replace stored
-        history with whatever this process happens to hold. Never after the
-        account has closed either: removing an entry deletes its document,
-        and a write that lands afterwards puts it back, leaving storage
-        behind for an account that no longer exists.
+        history with whatever this process happens to hold. Never leaves a
+        document behind for an account that has gone either: removing an
+        entry deletes its document, and a write that lands afterwards puts
+        it back, where nothing will ever read or clean it up.
+
+        The second half of that is settled after the write rather than
+        before it. A check in front of an await cannot be atomic: the
+        removal lands during the write, whatever we tested first. So the
+        write is taken back instead of guarded against, which gives the same
+        answer whichever order the two happen in.
         """
         if self._closing:
-            raise StorageWriteFailed(f"{DOMAIN}.{self._entry_id}")
-        if self._store is not None and self._loaded:
-            await self._store.async_save(self._account)
+            raise StorageWriteFailed(self._storage_key)
+        if self._store is None or not self._loaded:
+            return
+
+        await self._store.async_save(self._account)
+
+        if self._closing:
+            await self._store.async_remove()
+            raise StorageWriteFailed(self._storage_key)
 
     # ------------------------------------------------------------------
     # Public operations
