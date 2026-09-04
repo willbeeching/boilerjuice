@@ -10,12 +10,14 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
+import voluptuous as vol
 from custom_components.boilerjuice import (
     SERVICE_RESET_CONSUMPTION,
     SERVICE_SET_CONSUMPTION,
     async_setup_services,
 )
 from custom_components.boilerjuice.const import DOMAIN
+from custom_components.boilerjuice.coordinator import BoilerJuiceDataUpdateCoordinator
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import device_registry as dr
@@ -26,9 +28,11 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClien
 from .helpers import (
     TANK_ID,
     coordinator_of,
+    mock_site,
     reading_of,
     setup_account,
     tank_device,
+    tank_page,
     tracker_of,
 )
 
@@ -324,6 +328,115 @@ async def test_set_consumption_refuses_an_account_with_no_reading_yet(
         )
 
     assert tracker_of(coordinator).total_litres == 0.0
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param(10_000_001, id="above-the-storage-bound"),
+        pytest.param(float("inf"), id="infinite"),
+        pytest.param(float("nan"), id="not-a-number"),
+        pytest.param(-1, id="negative"),
+        pytest.param("plenty", id="not-numeric"),
+    ],
+)
+async def test_the_action_refuses_a_total_storage_would_reject(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, bad: object
+) -> None:
+    """A figure accepted here and refused on load costs the whole history.
+
+    cv.positive_float took 10,000,001 litres and reported success. The next
+    start could not read the document back and discarded the account.
+    """
+    entry = await setup_account(hass, aioclient_mock)
+    coordinator = coordinator_of(entry)
+    await coordinator.async_set_consumption(40.0)
+
+    with pytest.raises(vol.Invalid):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_SET_CONSUMPTION,
+            {"liters": bad, "entry_id": entry.entry_id},
+            blocking=True,
+        )
+
+    assert tracker_of(coordinator).total_litres == 40.0
+
+    # The point of the bound: what survived is still readable.
+    fresh = BoilerJuiceDataUpdateCoordinator(hass, entry)
+    try:
+        state, reason = await fresh._store.async_load()
+        assert reason is None
+        assert state.tanks[TANK_ID].total_litres == 40.0
+    finally:
+        await fresh.async_close()
+
+
+async def test_the_daily_rate_is_bounded_the_same_way(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    entry = await setup_account(hass, aioclient_mock)
+
+    with pytest.raises(vol.Invalid):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_SET_CONSUMPTION,
+            {"liters": 40.0, "daily": float("inf"), "entry_id": entry.entry_id},
+            blocking=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("service", "data"),
+    [
+        (SERVICE_RESET_CONSUMPTION, {}),
+        (SERVICE_SET_CONSUMPTION, {"liters": 1234.0}),
+    ],
+)
+async def test_a_failed_save_leaves_the_tracker_as_it_was(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    service: str,
+    data: dict[str, object],
+) -> None:
+    """Reporting nothing recorded must mean nothing changed in memory either.
+
+    The mutation happened before the write, so a failed write left the new
+    totals live and a later poll persisted them anyway.
+    """
+    entry = await setup_account(hass, aioclient_mock)
+    coordinator = coordinator_of(entry)
+    await coordinator.async_set_consumption(40.0)
+    before = reading_of(coordinator)["total_consumption_usable_liters"]
+    assert before == 40.0
+
+    with (
+        patch(
+            "homeassistant.helpers.storage.Store.async_save",
+            side_effect=OSError("no space left on device"),
+        ),
+        pytest.raises(HomeAssistantError),
+    ):
+        await hass.services.async_call(
+            DOMAIN, service, {**data, "entry_id": entry.entry_id}, blocking=True
+        )
+
+    assert tracker_of(coordinator).total_litres == 40.0
+    assert reading_of(coordinator)["total_consumption_usable_liters"] == 40.0
+
+    # The next poll must not quietly persist the change that was refused.
+    # It burns a real 250 L (2000 down to 1750), so the only correct total
+    # is 290: a leaked reset would give 250, a leaked set would give 1484.
+    mock_site(aioclient_mock, tank_html=tank_page(percentage=70, litres=1750))
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    fresh = BoilerJuiceDataUpdateCoordinator(hass, entry)
+    try:
+        state, _ = await fresh._store.async_load()
+        assert state.tanks[TANK_ID].total_litres == 290.0
+    finally:
+        await fresh.async_close()
 
 
 async def test_a_foreign_but_real_target_is_a_validation_error(

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
@@ -90,6 +91,18 @@ class TankTracker:
     # ------------------------------------------------------------------
     # Mutations
     # ------------------------------------------------------------------
+
+    def snapshot(self) -> tuple[ConsumptionState, int]:
+        """Return everything a failed action has to put back.
+
+        The history list is copied as well: `replace` would otherwise hand
+        back the same list the live state is still appending to.
+        """
+        return replace(self.state, history=list(self.state.history)), self._sample_days
+
+    def restore(self, snapshot: tuple[ConsumptionState, int]) -> None:
+        """Put back a state captured by `snapshot`."""
+        self.state, self._sample_days = snapshot
 
     def reset(self) -> None:
         """Clear the counters, references, history and any manual override."""

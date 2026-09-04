@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+import voluptuous as vol
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
@@ -106,6 +108,31 @@ def _number(value: Any, *, low: float, high: float) -> float:
 def _optional_number(value: Any, *, low: float, high: float) -> float | None:
     """Return None, or a finite number inside the bounds."""
     return None if value is None else _number(value, low=low, high=high)
+
+
+def storable_litres(value: Any) -> float:
+    """Return a litre figure this module would accept back off disk.
+
+    The same bounds as `_number`, raised as vol.Invalid so an action schema
+    can use them. Without this an action could write a total that passed
+    validation on the way in and failed it on the next load, taking the whole
+    account's history with it.
+    """
+    if isinstance(value, bool):
+        # `_number` refuses bools on the way back in, so accepting True as
+        # one litre here would be the same mismatch in miniature.
+        raise vol.Invalid("expected a number")
+    try:
+        number = float(vol.Coerce(float)(value))
+    except (TypeError, ValueError, vol.Invalid) as err:
+        raise vol.Invalid("expected a number") from err
+    # Range treats NaN as in-bounds, because every comparison against it is
+    # false, so finiteness is checked before the bounds rather than by them.
+    if not math.isfinite(number):
+        raise vol.Invalid("expected a finite number")
+    if not 0 <= number <= MAX_TOTAL_LITRES:
+        raise vol.Invalid(f"{number} is outside 0..{MAX_TOTAL_LITRES}")
+    return number
 
 
 def _moment(value: Any) -> datetime:

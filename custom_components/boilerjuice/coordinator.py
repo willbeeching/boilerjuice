@@ -320,10 +320,16 @@ class BoilerJuiceDataUpdateCoordinator(
     async def async_reset_consumption(self, tank_id: str | None = None) -> None:
         """Reset one tank, or every tank on the account."""
         async with self._lock:
-            for tracker in self._selected_trackers(tank_id):
+            trackers = self._selected_trackers(tank_id)
+            undo = [(tracker, tracker.snapshot()) for tracker in trackers]
+            for tracker in trackers:
                 tracker.reset()
                 self._account.tanks[tracker.tank_id] = tracker.state
-            await self._async_persist()
+            try:
+                await self._async_persist()
+            except Exception:
+                self._rollback(undo)
+                raise
 
     async def async_set_consumption(
         self,
@@ -354,6 +360,10 @@ class BoilerJuiceDataUpdateCoordinator(
                     translation_key="tanks_without_readings",
                     translation_placeholders={"tanks": ", ".join(sorted(missing))},
                 )
+            # Snapshotted before anything moves. A failed write used to
+            # leave the new totals in memory, reported as "nothing was
+            # recorded", and then persisted them on the next poll anyway.
+            undo = [(tracker, tracker.snapshot()) for tracker in trackers]
             for tracker in trackers:
                 tracker.set_consumption(total_litres, daily_litres, self._kwh_per_litre)
                 state = published[tracker.tank_id]
@@ -362,7 +372,14 @@ class BoilerJuiceDataUpdateCoordinator(
                 updated = tracker.decorate(dict(state), self._kwh_per_litre)
                 updated["last_level_change"] = tracker.last_level_change
                 published[tracker.tank_id] = updated
-            await self._async_persist()
+                self._account.tanks[tracker.tank_id] = tracker.state
+            try:
+                await self._async_persist()
+            except Exception:
+                self._rollback(undo)
+                raise
+            # Published only after the write succeeded, so what the entities
+            # show is what survives a restart.
             if published:
                 self.async_set_updated_data(published)
 
@@ -372,6 +389,17 @@ class BoilerJuiceDataUpdateCoordinator(
             round(total_litres * self._kwh_per_litre, 1),
             "unchanged" if daily_litres is None else f"{daily_litres} L/day",
         )
+
+    def _rollback(self, undo: list[tuple[TankTracker, tuple[Any, int]]]) -> None:
+        """Put the trackers back as they were before a failed write.
+
+        The account's own map is repointed too: `reset` replaces the state
+        object rather than mutating it, so the map would otherwise still
+        hold the state the failed write produced.
+        """
+        for tracker, snapshot in undo:
+            tracker.restore(snapshot)
+            self._account.tanks[tracker.tank_id] = tracker.state
 
     def _selected_trackers(self, tank_id: str | None) -> list[TankTracker]:
         """Return the trackers an operation applies to."""
@@ -686,26 +714,35 @@ class BoilerJuiceDataUpdateCoordinator(
 
             await self._async_persist()
 
-        if not wanted:
-            # Reported only after reconciling, so the removal counting above
-            # has already run and been persisted.
-            raise UpdateFailed(
-                "No BoilerJuice tank on this account matches the "
-                "integration's configuration"
-            )
+            if not wanted:
+                # Reported only after reconciling, so the removal counting
+                # above has already run and been persisted.
+                raise UpdateFailed(
+                    "No BoilerJuice tank on this account matches the "
+                    "integration's configuration"
+                )
 
-        self._register_devices(published)
+            self._register_devices(published)
 
-        # No `and known_before` guard: the first refresh happens before the
-        # platforms register their listeners, so there is nobody to notify
-        # then anyway. Requiring a non-empty `known_before` meant an account
-        # whose every tank had been retired never got entities for the next
-        # tank it gained - the device appeared, with nothing on it.
-        discovered = [tank_id for tank_id in published if tank_id not in known_before]
-        for listener in self._new_tank_listeners:
-            listener(discovered)
+            # No `and known_before` guard: the first refresh happens before
+            # the platforms register their listeners, so there is nobody to
+            # notify then anyway. Requiring a non-empty `known_before` meant
+            # an account whose every tank had been retired never got entities
+            # for the next tank it gained - the device appeared, with nothing
+            # on it.
+            discovered = [
+                tank_id for tank_id in published if tank_id not in known_before
+            ]
+            for listener in self._new_tank_listeners:
+                listener(discovered)
 
-        return published
+            # Returned from inside the lock on purpose. Home Assistant
+            # assigns this snapshot to `self.data` the moment we return, and
+            # an action publishing its own snapshot has to take this lock
+            # first, so the two cannot interleave. Nothing between building
+            # `published` and returning it suspends today; keeping the return
+            # inside the lock means nothing added here later can either.
+            return published
 
     @callback
     def _register_devices(self, published: dict[str, dict[str, Any]]) -> None:

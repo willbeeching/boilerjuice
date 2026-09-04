@@ -169,6 +169,27 @@ async def test_the_heating_season_is_unknown_before_this_season_has_data(
     assert seasonal.state == "unknown"
 
 
+def test_every_sensor_is_listed_in_the_readme() -> None:
+    """A sensor nobody documented is a sensor nobody knows they have."""
+    import json
+    import pathlib as _pathlib
+
+    from custom_components.boilerjuice.sensor import SENSORS
+
+    root = _pathlib.Path("custom_components/boilerjuice")
+    names = json.loads((root / "strings.json").read_text(encoding="utf-8"))["entity"][
+        "sensor"
+    ]
+    readme = _pathlib.Path("README.md").read_text(encoding="utf-8")
+
+    missing = [
+        description.key
+        for description in SENSORS
+        if f"| {names[description.translation_key]['name']} |" not in readme
+    ]
+    assert not missing, f"not in a README table: {missing}"
+
+
 async def test_every_enum_sensor_state_is_translated() -> None:
     """An untranslated option shows up in the UI as the raw value."""
     import json

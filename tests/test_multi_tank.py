@@ -936,3 +936,81 @@ async def test_the_coordinator_refuses_the_same_call_on_its_own(
 
     assert raised.value.translation_key == "tanks_without_readings"
     assert tracker_of(coordinator, FIRST).total_litres == 0.0
+
+
+async def test_the_snapshot_a_refresh_returns_is_built_under_the_lock(
+    hass: HomeAssistant, account: MockConfigEntry
+) -> None:
+    """Nothing may run between building the snapshot and returning it.
+
+    Home Assistant assigns the returned snapshot to coordinator.data as soon
+    as _async_update_data returns. An action publishing its own snapshot
+    takes the same lock, so as long as the return happens inside the lock the
+    two cannot interleave. Registering the devices is the last thing before
+    the return, so it is where that is checked.
+    """
+    coordinator = coordinator_of(account)
+    held: list[bool] = []
+    register = coordinator._register_devices
+
+    def watched(published: dict[str, dict[str, object]]) -> None:
+        held.append(coordinator._lock.locked())
+        register(published)
+
+    coordinator._register_devices = watched
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    assert held == [True]
+
+
+@pytest.mark.parametrize("action_first", [True, False])
+async def test_an_action_and_a_refresh_agree_whichever_order_they_run_in(
+    hass: HomeAssistant,
+    account: MockConfigEntry,
+    aioclient_mock: AiohttpClientMocker,
+    action_first: bool,
+) -> None:
+    """What the entities show must match what the trackers hold.
+
+    A refresh that started before the action must not publish a snapshot
+    taken before it, and an action must not publish over a fresher reading
+    without the reading's figures in it.
+    """
+    import asyncio
+
+    coordinator = coordinator_of(account)
+    parked = asyncio.Event()
+    gate = asyncio.Event()
+    collect = coordinator._async_collect
+
+    async def slow_collect() -> object:
+        result = await collect()
+        parked.set()
+        await gate.wait()
+        return result
+
+    coordinator._async_collect = slow_collect
+    mock_account(aioclient_mock, TWO_TANKS)
+
+    refresh = hass.async_create_task(coordinator.async_refresh())
+    await asyncio.wait_for(parked.wait(), timeout=5)
+
+    if not action_first:
+        gate.set()
+        await asyncio.wait_for(refresh, timeout=5)
+
+    await asyncio.wait_for(
+        coordinator.async_set_consumption(1234.0, tank_id=FIRST), timeout=5
+    )
+
+    if action_first:
+        gate.set()
+        await asyncio.wait_for(refresh, timeout=5)
+
+    await hass.async_block_till_done()
+
+    for tank_id in (FIRST, SECOND):
+        published = coordinator.data[tank_id]["total_consumption_usable_liters"]
+        assert published == tracker_of(coordinator, tank_id).total_litres, tank_id
+    assert tracker_of(coordinator, FIRST).total_litres >= 1234.0

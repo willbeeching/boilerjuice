@@ -20,6 +20,7 @@ from .const import CONF_TANK_ID, DOMAIN
 from .coordinator import BoilerJuiceDataUpdateCoordinator
 from .helpers import device_config_entry_ids, device_tank_ids, normalise_email
 from .runtime import BoilerJuiceConfigEntry, BoilerJuiceRuntimeData
+from .storage import storable_litres
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -55,10 +56,14 @@ RESET_CONSUMPTION_SCHEMA = vol.Schema(
     extra=vol.ALLOW_EXTRA,
 )
 
+# Bounded by what storage will accept back, not merely by being positive.
+# cv.positive_float took 10_000_001 litres, and infinity, and NaN; the action
+# reported success and the next start discarded the account's whole history
+# as unreadable.
 SET_CONSUMPTION_SCHEMA = vol.Schema(
     {
-        vol.Required("liters"): cv.positive_float,
-        vol.Optional("daily"): cv.positive_float,
+        vol.Required("liters"): storable_litres,
+        vol.Optional("daily"): storable_litres,
         vol.Optional("entry_id"): vol.Any(cv.string, [cv.string]),
     },
     extra=vol.ALLOW_EXTRA,

@@ -147,6 +147,7 @@ One set per tank.
 | --- | --- |
 | Last level change | When the tank level last changed. It is normal for this to sit still for days |
 | Last successful update | When the account was last polled successfully |
+| Heating season | Winter, spring, summer or autumn: the season the seasonal average is currently being taken from. Unknown until a day in this season has been recorded |
 
 ## How consumption tracking works
 
