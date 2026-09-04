@@ -256,6 +256,15 @@ _INTERSTITIAL_MARKERS = {
 }
 
 
+# Counted on the raw response, not on the parse tree. html.parser stops at
+# markup it cannot follow - an unclosed <script> swallows everything after
+# it - and the difference between "this page has no links" and "we never
+# reached them" is the difference between the site changing and us failing
+# to read it. Counting both ways says which.
+_RAW_ANCHOR_RE = re.compile(r"<a[\s>]", re.I)
+_RAW_FORM_RE = re.compile(r"<form[\s>]", re.I)
+
+
 def describe_page_shape(html: str) -> dict[str, Any]:
     """Describe an unexpected page without reproducing any of it.
 
@@ -301,6 +310,12 @@ def describe_page_shape(html: str) -> dict[str, Any]:
         "state_containers": [
             name for name in _STATE_CONTAINERS if name.lower() in lowered
         ],
+        # Raw counts beside the parsed ones. Parsed zero with a raw count in
+        # the dozens means the parse gave up, not that the page is empty.
+        "raw_anchors": len(_RAW_ANCHOR_RE.findall(html)),
+        "raw_forms": len(_RAW_FORM_RE.findall(html)),
+        "raw_tank_links": len(_TANK_LINK_RE.findall(html)),
+        "ends_with_closing_html": lowered.rstrip().endswith("</html>"),
         "looks_like_interstitial": interstitial,
     }
 

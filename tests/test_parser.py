@@ -524,6 +524,39 @@ APP_SHELL = """
 """
 
 
+SWALLOWED = """
+<html><head><script>var config = {a: 1};</head>
+<body><nav><a href="/uk/users/tanks/998877">My tank</a>
+<a href="/uk/account">Account</a></nav>
+<form action="/search"></form></body></html>
+"""
+
+
+def test_a_parse_that_gave_up_is_told_apart_from_an_empty_page() -> None:
+    """Zero parsed anchors has two meanings, and they are opposites.
+
+    An unclosed <script> makes html.parser swallow the rest of the
+    document, so a perfectly ordinary page reports no links at all. Read
+    on its own that looks exactly like a page rewritten to draw itself in
+    the browser. Counting the raw response as well says which happened.
+    """
+    shape = parser.describe_page_shape(SWALLOWED)
+
+    assert shape["links"] == 0
+    assert shape["forms"] == 0
+    assert shape["raw_anchors"] == 2
+    assert shape["raw_forms"] == 1
+    assert shape["raw_tank_links"] == 1
+
+
+def test_a_page_with_genuinely_no_links_says_so_both_ways() -> None:
+    shape = parser.describe_page_shape(APP_SHELL)
+
+    assert shape["links"] == 0
+    assert shape["raw_anchors"] == 0
+    assert shape["raw_tank_links"] == 0
+
+
 def test_a_client_rendered_shell_is_distinguishable_from_a_redesign() -> None:
     """Zero anchors and a pile of scripts is an app, not a page.
 
@@ -581,6 +614,10 @@ def test_the_shape_carries_no_page_content() -> None:
         "json_scripts",
         "largest_inline_script_bytes",
         "state_containers",
+        "raw_anchors",
+        "raw_forms",
+        "raw_tank_links",
+        "ends_with_closing_html",
         "looks_like_interstitial",
     }
     for key, value in shape.items():
