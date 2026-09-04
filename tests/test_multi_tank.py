@@ -1380,3 +1380,79 @@ async def test_a_poll_that_outlasts_the_unload_claims_nothing(
 
     assert not hass.data.get(TANK_CLAIMS)
     assert not coordinator.last_update_success
+
+
+async def test_a_late_poll_does_not_recreate_the_storage_removal_deleted(
+    hass: HomeAssistant,
+    account: MockConfigEntry,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage,
+) -> None:
+    """Removing an account deletes its document; a late poll put it back.
+
+    The closing check had two awaits behind it, the price fetch and the
+    lock, and the account can go away during either. The document came back
+    after the entry that owned it was gone, and nothing would ever clean it
+    up.
+    """
+    import asyncio
+    from unittest.mock import patch
+
+    from custom_components.boilerjuice.const import TANK_CLAIMS
+
+    coordinator = coordinator_of(account)
+    key = f"{DOMAIN}.{account.entry_id}"
+    assert key in hass_storage
+
+    parked = asyncio.Event()
+    gate = asyncio.Event()
+    price = coordinator._async_refresh_price
+
+    async def slow_price() -> None:
+        parked.set()
+        await gate.wait()
+        await price()
+
+    coordinator._async_refresh_price = slow_price
+    mock_account(aioclient_mock, TWO_TANKS)
+
+    refresh = hass.async_create_task(coordinator.async_refresh())
+    await asyncio.wait_for(parked.wait(), timeout=5)
+
+    with patch("custom_components.boilerjuice.coordinator.CLOSE_TIMEOUT_SECONDS", 0.01):
+        assert await hass.config_entries.async_remove(account.entry_id)
+    await asyncio.sleep(0)
+    assert key not in hass_storage
+
+    gate.set()
+    await asyncio.wait_for(refresh, timeout=5)
+    await hass.async_block_till_done()
+
+    assert key not in hass_storage
+    assert not coordinator.last_update_success
+    assert not hass.data.get(TANK_CLAIMS)
+
+
+async def test_an_action_still_running_when_the_account_closes_writes_nothing(
+    hass: HomeAssistant, account: MockConfigEntry, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """An action writes the same document, without going through the poll path.
+
+    Waiting only for polls left an action free to write after the removal
+    had deleted the document, which is the same orphan by another route.
+    """
+    coordinator = coordinator_of(account)
+    coordinator._closing = True
+
+    with pytest.raises(HomeAssistantError) as raised:
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_SET_CONSUMPTION,
+            {"liters": 1234.0, "entry_id": account.entry_id},
+            blocking=True,
+        )
+
+    # Refused, told the caller so, and left nothing behind in memory either.
+    assert raised.value.translation_key == "save_failed"
+    assert tracker_of(coordinator, FIRST).total_litres == 0.0
+    assert coordinator.data[FIRST]["total_consumption_usable_liters"] == 0.0

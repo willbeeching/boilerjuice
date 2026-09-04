@@ -341,8 +341,13 @@ class BoilerJuiceDataUpdateCoordinator(
         """Write the current state. Callers hold the lock.
 
         Never writes before a successful load: doing so would replace stored
-        history with whatever this process happens to hold.
+        history with whatever this process happens to hold. Never after the
+        account has closed either: removing an entry deletes its document,
+        and a write that lands afterwards puts it back, leaving storage
+        behind for an account that no longer exists.
         """
+        if self._closing:
+            raise StorageWriteFailed(f"{DOMAIN}.{self._entry_id}")
         if self._store is not None and self._loaded:
             await self._store.async_save(self._account)
 
@@ -370,6 +375,11 @@ class BoilerJuiceDataUpdateCoordinator(
         try:
             async with asyncio.timeout(CLOSE_TIMEOUT_SECONDS):
                 await self._idle.wait()
+                # And an action, which does not go through the poll path but
+                # writes the same document. Taking the lock is how we wait
+                # for one to finish.
+                async with self._lock:
+                    pass
         except TimeoutError:
             _LOGGER.warning(
                 "A BoilerJuice update was still running after %s seconds; "
@@ -925,6 +935,14 @@ class BoilerJuiceDataUpdateCoordinator(
         known_before = set(self._trackers)
 
         async with self._lock:
+            if self._closing:
+                # Checked again here, at the last moment before anything is
+                # written. The check above it has two awaits behind it - the
+                # price fetch and this lock - and the account can go away
+                # during either, which left a late poll recreating the
+                # document its own removal had just deleted.
+                raise UpdateFailed("This BoilerJuice account is unloading")
+
             now = dt_util.now()
             self._claim_unassigned(listed)
 
