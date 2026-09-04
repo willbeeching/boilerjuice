@@ -227,6 +227,14 @@ A device or entity target resets that tank. Targeting the config entry resets
 every tank on the account. With more than one account configured a target is
 required: this action rewrites stored history, so it will not guess.
 
+Both actions apply to one account per call. A target that reaches two of them,
+whether as a list of entry IDs or through an area or floor holding tanks from
+each, is refused with nothing changed. Accounts are written one at a time and
+a document already on disk cannot be put back, so a call that failed half way
+would leave you worse off than one that never started. Areas, floors and
+labels all resolve to the tanks under them; a target that resolves to no
+BoilerJuice tank is an error, never a licence to reset everything.
+
 ### `boilerjuice.set_consumption`
 
 Seeds the counters with known values, for example after a reset or after

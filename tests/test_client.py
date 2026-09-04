@@ -231,6 +231,28 @@ async def test_closing_the_client_twice_is_harmless(
     await client.async_close()
 
 
+async def test_the_client_detaches_its_session_rather_than_closing_it(
+    client: BoilerJuiceClient,
+) -> None:
+    """Home Assistant's close() reports the misuse and closes nothing.
+
+    Sessions from async_create_clientsession share a connector, so HA
+    replaces close() with a function that logs and returns. Awaiting it left
+    every session registered until Home Assistant shut down, and said so in
+    the log each time.
+    """
+    from unittest.mock import MagicMock
+
+    session = MagicMock()
+    client._session = session
+
+    await client.async_close()
+
+    session.detach.assert_called_once_with()
+    session.close.assert_not_called()
+    assert client._session is None
+
+
 async def test_a_same_host_redirect_after_signing_in_is_followed(
     aioclient_mock: AiohttpClientMocker, client: BoilerJuiceClient
 ) -> None:

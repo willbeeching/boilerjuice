@@ -24,6 +24,7 @@ from .helpers import (
     PRICE_PAGE,
     SIGNED_IN_PAGE,
     TANK_URL,
+    coordinator_of,
     load_fixture,
     mock_site,
     setup_account,
@@ -391,6 +392,76 @@ async def test_reconfigure_can_narrow_the_tracked_tanks(
     assert result["reason"] == "reconfigure_successful"
     assert entry.options[CONF_TANKS] == ["789012"]
     assert entry.options[CONF_KWH_PER_LITRE] == 9.6
+
+
+async def test_validation_sessions_are_not_registered_for_cleanup(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """One session per validation attempt, released when the attempt ends.
+
+    With auto_cleanup on, each attempt registered a shutdown listener and
+    kept its session alive until Home Assistant stopped, so somebody working
+    through a mistyped password accumulated them.
+    """
+    import homeassistant.helpers.aiohttp_client as aiohttp_client
+
+    mock_account(aioclient_mock)
+    seen: list[bool] = []
+    real = aiohttp_client.async_create_clientsession
+
+    def recording(hass_, **kwargs):
+        seen.append(kwargs.get("auto_cleanup", True))
+        return real(hass_, **kwargs)
+
+    with patch.object(aiohttp_client, "async_create_clientsession", recording):
+        result = await start_flow(hass)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], USER_INPUT
+        )
+    await hass.async_block_till_done()
+
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert seen, "the config flow created no session"
+    assert seen == [False] * len(seen)
+
+
+async def test_reconfigure_replaces_a_legacy_pinned_tank(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """The pin outranks the selection, so it has to go when the selection lands.
+
+    Reconfiguring a legacy entry from one tank to another reported success
+    and changed nothing: the new choice was written to the options while the
+    old CONF_TANK_ID stayed in the entry data and kept winning.
+    """
+    entry = await setup_account(hass, aioclient_mock, tank_id="123456")
+    assert coordinator_of(entry).tank_ids == ["123456"]
+    mock_account(aioclient_mock, tanks="tanks_list_multiple.html")
+
+    result = await entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_KWH_PER_LITRE: 10.35, CONF_TANKS: ["789012"]},
+    )
+    await hass.async_block_till_done()
+
+    assert result["reason"] == "reconfigure_successful"
+    assert CONF_TANK_ID not in entry.data
+    assert entry.options[CONF_TANKS] == ["789012"]
+    assert coordinator_of(entry).tank_ids == ["789012"]
+
+
+async def test_the_reconfigure_form_starts_from_the_pinned_tank(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """A legacy entry tracks one tank, so the form must not say it tracks all."""
+    entry = await setup_account(hass, aioclient_mock, tank_id="123456")
+    mock_account(aioclient_mock, tanks="tanks_list_multiple.html")
+
+    result = await entry.start_reconfigure_flow(hass)
+
+    defaults = result["data_schema"]({CONF_KWH_PER_LITRE: 10.35})
+    assert defaults[CONF_TANKS] == ["123456"]
 
 
 async def test_reconfigure_can_change_the_password(

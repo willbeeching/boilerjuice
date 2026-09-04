@@ -157,6 +157,9 @@
     "no_reading_yet": {
       "message": "That BoilerJuice tank has no reading yet, so there is nothing to set the consumption against. Wait for a successful update and try again."
     },
+    "one_account_at_a_time": {
+      "message": "Nothing was changed. This action rewrites stored consumption history, and a failure part-way through {count} accounts could not be undone on the ones already written, so it applies to one BoilerJuice account at a time. Target each account separately."
+    },
     "save_failed": {
       "message": "The change could not be saved, so nothing was recorded. Check the Home Assistant log for the storage error and try again."
     },

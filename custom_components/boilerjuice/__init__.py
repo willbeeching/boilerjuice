@@ -11,6 +11,7 @@ from homeassistant.config_entries import SOURCE_IMPORT
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, Platform
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -47,14 +48,25 @@ SERVICE_SET_CONSUMPTION = "set_consumption"
 # UI, plus the explicit entry_id escape hatch. Every one of these is resolved
 # to a config entry below; anything left unresolved is an error rather than a
 # silent "apply to everything".
-TARGET_KEYS = ("entry_id", "device_id", "entity_id", "area_id", "label_id")
-
-RESET_CONSUMPTION_SCHEMA = vol.Schema(
-    {
-        vol.Optional("entry_id"): vol.Any(cv.string, [cv.string]),
-    },
-    extra=vol.ALLOW_EXTRA,
+TARGET_KEYS = (
+    "entry_id",
+    "device_id",
+    "entity_id",
+    "area_id",
+    "floor_id",
+    "label_id",
 )
+
+# Every target field is named, and nothing else is allowed through. With
+# ALLOW_EXTRA a typo was accepted in silence: `deviceid` left no recognised
+# target, and a single configured account then fell back to "all of it",
+# which for these actions means erasing the history the user was trying to
+# fix one tank of.
+_TARGET_FIELDS: dict[Any, Any] = {
+    vol.Optional(key): vol.Any(cv.string, [cv.string]) for key in TARGET_KEYS
+}
+
+RESET_CONSUMPTION_SCHEMA = vol.Schema(dict(_TARGET_FIELDS))
 
 # Bounded by what storage will accept back, not merely by being positive.
 # cv.positive_float took 10_000_001 litres, and infinity, and NaN; the action
@@ -62,11 +74,10 @@ RESET_CONSUMPTION_SCHEMA = vol.Schema(
 # as unreadable.
 SET_CONSUMPTION_SCHEMA = vol.Schema(
     {
+        **_TARGET_FIELDS,
         vol.Required("liters"): storable_litres,
         vol.Optional("daily"): storable_litres,
-        vol.Optional("entry_id"): vol.Any(cv.string, [cv.string]),
-    },
-    extra=vol.ALLOW_EXTRA,
+    }
 )
 
 
@@ -223,19 +234,35 @@ def _resolve_targets(
             )
         entry_ids.add(entry_id)
 
+    # A floor is a set of areas, and resolves through them. Left unhandled it
+    # looked like no target at all, which is the fallback that erases
+    # everything on a single-account system.
+    area_ids = set(targets["area_id"]) | _areas_in_floors(hass, targets["floor_id"])
+
     device_ids = set(targets["device_id"])
     device_ids |= _devices_for_entities(hass, targets["entity_id"])
-    device_ids |= _devices_in_areas(hass, targets["area_id"])
+    device_ids |= _devices_in_areas(hass, area_ids)
     device_ids |= _devices_with_labels(hass, targets["label_id"])
 
     entry_ids |= _entry_ids_for_devices(hass, device_ids, coordinators)
     entry_ids |= _entry_ids_for_entities(hass, targets["entity_id"], coordinators)
-    entry_ids |= _entry_ids_for_areas(hass, targets["area_id"], coordinators)
+    entry_ids |= _entry_ids_for_areas(hass, area_ids, coordinators)
     entry_ids |= _entry_ids_for_labels(hass, targets["label_id"], coordinators)
 
     if not entry_ids:
         raise ServiceValidationError(
             translation_domain=DOMAIN, translation_key="no_boilerjuice_target"
+        )
+
+    if len(entry_ids) > 1:
+        # These actions rewrite stored history one account at a time, and a
+        # failure part-way through cannot be undone on the accounts already
+        # written. Rather than half-apply, refuse: the caller can name each
+        # account in turn and see each result.
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="one_account_at_a_time",
+            translation_placeholders={"count": str(len(entry_ids))},
         )
 
     # An entry id names a whole account. Everything else names specific
@@ -244,8 +271,8 @@ def _resolve_targets(
     account_wide = set(targets["entry_id"])
     named_tanks = _tank_ids_for_devices(hass, device_ids)
 
-    tank_targets = any(
-        targets[key] for key in ("device_id", "entity_id", "area_id", "label_id")
+    tank_targets = bool(
+        targets["device_id"] or targets["entity_id"] or targets["label_id"] or area_ids
     )
     if tank_targets and not named_tanks:
         raise ServiceValidationError(
@@ -278,6 +305,16 @@ def _devices_for_entities(hass: HomeAssistant, entity_ids: Iterable[str]) -> set
         if entry is not None and entry.device_id:
             devices.add(entry.device_id)
     return devices
+
+
+def _areas_in_floors(hass: HomeAssistant, floor_ids: Iterable[str]) -> set[str]:
+    """Return the ids of the areas on the given floors."""
+    registry = ar.async_get(hass)
+    return {
+        area.id
+        for floor_id in floor_ids
+        for area in ar.async_entries_for_floor(registry, floor_id)
+    }
 
 
 def _devices_in_areas(hass: HomeAssistant, area_ids: Iterable[str]) -> set[str]:

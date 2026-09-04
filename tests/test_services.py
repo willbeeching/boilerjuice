@@ -217,7 +217,52 @@ async def test_an_area_target_reaches_only_that_account(
     assert totals(hass, first, second) == [40.0, 0.0]
 
 
-async def test_a_list_of_entry_ids_is_accepted(
+async def test_a_target_spanning_two_accounts_is_refused(
+    hass: HomeAssistant, two_accounts
+) -> None:
+    """Half an account rewritten is worse than none.
+
+    The accounts were written one after another, so a failure on the second
+    left the first already changed and saved, with the call reported as
+    failed. There is no undo for a document that has already been written,
+    so the action refuses the whole thing instead.
+    """
+    first, second = two_accounts
+
+    with pytest.raises(ServiceValidationError) as raised:
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_RESET_CONSUMPTION,
+            {"entry_id": [first.entry_id, second.entry_id]},
+            blocking=True,
+        )
+
+    assert raised.value.translation_key == "one_account_at_a_time"
+    assert totals(hass, first, second) == [40.0, 90.0]
+
+
+async def test_an_area_holding_both_accounts_is_refused_too(
+    hass: HomeAssistant, two_accounts
+) -> None:
+    """The same rule, reached through a target rather than a list."""
+    from homeassistant.helpers import area_registry as ar
+
+    first, second = two_accounts
+    area = ar.async_get(hass).async_create("Plant room")
+    for entry, tank_id in ((first, "111111"), (second, "222222")):
+        device = tank_device(hass, entry, tank_id)
+        assert device is not None
+        dr.async_get(hass).async_update_device(device.id, area_id=area.id)
+
+    with pytest.raises(ServiceValidationError):
+        await hass.services.async_call(
+            DOMAIN, SERVICE_RESET_CONSUMPTION, {"area_id": area.id}, blocking=True
+        )
+
+    assert totals(hass, first, second) == [40.0, 90.0]
+
+
+async def test_one_entry_id_in_a_list_is_still_accepted(
     hass: HomeAssistant, two_accounts
 ) -> None:
     first, second = two_accounts
@@ -225,12 +270,12 @@ async def test_a_list_of_entry_ids_is_accepted(
     await hass.services.async_call(
         DOMAIN,
         SERVICE_RESET_CONSUMPTION,
-        {"entry_id": [first.entry_id, second.entry_id]},
+        {"entry_id": [first.entry_id]},
         blocking=True,
     )
     await hass.async_block_till_done()
 
-    assert totals(hass, first, second) == [0.0, 0.0]
+    assert totals(hass, first, second) == [0.0, 90.0]
 
 
 async def test_an_unknown_entry_id_is_refused(
@@ -437,6 +482,134 @@ async def test_a_failed_save_leaves_the_tracker_as_it_was(
         assert state.tanks[TANK_ID].total_litres == 290.0
     finally:
         await fresh.async_close()
+
+
+@pytest.mark.parametrize(
+    ("service", "data"),
+    [
+        (SERVICE_RESET_CONSUMPTION, {}),
+        (SERVICE_SET_CONSUMPTION, {"liters": 100.0}),
+    ],
+)
+@pytest.mark.parametrize(
+    "typo", ["deviceid", "device", "entityid", "entry", "areaid", "target"]
+)
+async def test_a_misspelled_target_is_refused_not_widened(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    service: str,
+    data: dict[str, object],
+    typo: str,
+) -> None:
+    """A field nobody reads is not a target, and must not read as none.
+
+    ALLOW_EXTRA accepted `deviceid`, left no recognised target, and the
+    single-account fallback then rewrote every tank on the account: the
+    opposite of what the caller asked for, from one missing underscore.
+    """
+    entry = await setup_account(hass, aioclient_mock)
+    coordinator = coordinator_of(entry)
+    await coordinator.async_set_consumption(40.0)
+
+    device = tank_device(hass, entry, TANK_ID)
+    assert device is not None
+
+    with pytest.raises(vol.Invalid):
+        await hass.services.async_call(
+            DOMAIN, service, {**data, typo: device.id}, blocking=True
+        )
+
+    assert tracker_of(coordinator).total_litres == 40.0
+
+
+async def test_a_floor_target_reaches_only_the_tanks_on_it(
+    hass: HomeAssistant, two_accounts
+) -> None:
+    """A floor is a set of areas, and used to resolve to nothing at all.
+
+    Unresolved it looked like no target, which on a single account means
+    every tank: picking one floor in the UI erased the lot. Two accounts
+    here, so the fallback cannot pass this by accident.
+    """
+    from homeassistant.helpers import area_registry as ar
+    from homeassistant.helpers import floor_registry as fr
+
+    first, second = two_accounts
+    floor = fr.async_get(hass).async_create("Ground")
+    area = ar.async_get(hass).async_create("Utility", floor_id=floor.floor_id)
+    device = tank_device(hass, second, "222222")
+    assert device is not None
+    dr.async_get(hass).async_update_device(device.id, area_id=area.id)
+
+    await hass.services.async_call(
+        DOMAIN, SERVICE_RESET_CONSUMPTION, {"floor_id": floor.floor_id}, blocking=True
+    )
+    await hass.async_block_till_done()
+
+    assert totals(hass, first, second) == [40.0, 0.0]
+
+
+async def test_a_floor_with_no_boilerjuice_tank_is_refused(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    from homeassistant.helpers import floor_registry as fr
+
+    entry = await setup_account(hass, aioclient_mock)
+    coordinator = coordinator_of(entry)
+    await coordinator.async_set_consumption(40.0)
+
+    floor = fr.async_get(hass).async_create("Loft")
+
+    with pytest.raises(ServiceValidationError):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_RESET_CONSUMPTION,
+            {"floor_id": floor.floor_id},
+            blocking=True,
+        )
+
+    assert tracker_of(coordinator).total_litres == 40.0
+
+
+@pytest.mark.parametrize(
+    ("service", "data"),
+    [
+        (SERVICE_RESET_CONSUMPTION, {}),
+        (SERVICE_SET_CONSUMPTION, {"liters": 1234.0}),
+    ],
+)
+async def test_a_write_home_assistant_swallows_is_still_a_failure(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    service: str,
+    data: dict[str, object],
+) -> None:
+    """Store logs a failed write and returns normally; we must not.
+
+    This is what a full disk actually looks like from inside an
+    integration: async_save raises nothing at all. Mocking async_save to
+    raise tested a failure mode Home Assistant does not have.
+    """
+    from homeassistant.helpers.storage import Store
+    from homeassistant.util.file import WriteError
+
+    entry = await setup_account(hass, aioclient_mock)
+    coordinator = coordinator_of(entry)
+    await coordinator.async_set_consumption(40.0)
+
+    with (
+        patch.object(
+            Store, "_async_write_data", side_effect=WriteError("no space left")
+        ),
+        pytest.raises(HomeAssistantError) as raised,
+    ):
+        await hass.services.async_call(
+            DOMAIN, service, {**data, "entry_id": entry.entry_id}, blocking=True
+        )
+
+    assert raised.value.translation_key == "save_failed"
+    assert tracker_of(coordinator).total_litres == 40.0
+    assert reading_of(coordinator)["total_consumption_usable_liters"] == 40.0
 
 
 async def test_a_foreign_but_real_target_is_a_validation_error(

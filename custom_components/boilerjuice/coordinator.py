@@ -40,7 +40,12 @@ from .errors import BoilerJuiceAuthError, BoilerJuiceParseError
 from .helpers import async_tank_device
 from .models import TankReading
 from .parser import finite, validate_tank_id
-from .storage import AccountState, ConsumptionState, ConsumptionStore
+from .storage import (
+    AccountState,
+    ConsumptionState,
+    ConsumptionStore,
+    StorageWriteFailed,
+)
 from .tank import TankTracker
 
 _LOGGER = logging.getLogger(__name__)
@@ -712,7 +717,19 @@ class BoilerJuiceDataUpdateCoordinator(
                 self._forget(tank_id)
                 published.pop(tank_id, None)
 
-            await self._async_persist()
+            try:
+                await self._async_persist()
+            except StorageWriteFailed:
+                # The readings are good; only the record of them failed. The
+                # entities stay up, because taking them down would not put
+                # the disk right, and the next successful write carries the
+                # totals. Said out loud, because Home Assistant's own Store
+                # only whispers it.
+                _LOGGER.warning(
+                    "Could not write this BoilerJuice account's consumption "
+                    "history. The running totals are correct but will not "
+                    "survive a restart until a later write succeeds"
+                )
 
             if not wanted:
                 # Reported only after reconciling, so the removal counting

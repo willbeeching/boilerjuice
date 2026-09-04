@@ -63,9 +63,16 @@ async def async_validate_account(
     import aiohttp
     from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
+    # auto_cleanup=False because this session belongs to one validation, not
+    # to a config entry. With it on, each attempt registered a shutdown
+    # listener and the session stayed alive until Home Assistant stopped, so
+    # a user working through a wrong password piled them up.
     client = BoilerJuiceClient(
         lambda timeout: async_create_clientsession(
-            hass, cookie_jar=aiohttp.CookieJar(), timeout=timeout
+            hass,
+            auto_cleanup=False,
+            cookie_jar=aiohttp.CookieJar(),
+            timeout=timeout,
         ),
         data[CONF_EMAIL],
         data[CONF_PASSWORD],
@@ -218,9 +225,18 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     for tank_id in user_input.get(CONF_TANKS, [])
                     if tank_id in tank_ids
                 ]
+                # The legacy pin is dropped, not merged forward. It takes
+                # precedence over the tank selection, so leaving it behind
+                # meant a reconfiguration from one tank to another reported
+                # success and changed nothing.
+                data = {
+                    key: value
+                    for key, value in {**entry.data, **candidate}.items()
+                    if key != CONF_TANK_ID
+                }
                 return self.async_update_reload_and_abort(
                     entry,
-                    data={**entry.data, **candidate},
+                    data=data,
                     options={
                         **entry.options,
                         CONF_KWH_PER_LITRE: user_input[CONF_KWH_PER_LITRE],
@@ -234,7 +250,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # The account is unreachable right now; offer the tanks we know.
             tank_ids = list(entry.options.get(CONF_TANKS) or [])
 
-        current = entry.options.get(CONF_TANKS) or tank_ids
+        # A legacy entry has no CONF_TANKS; what it actually tracks is the
+        # pinned tank, so that is what the form starts from. Offering every
+        # tank pre-selected would have said the opposite of the truth.
+        pinned = validate_tank_id(entry.data.get(CONF_TANK_ID))
+        current = entry.options.get(CONF_TANKS) or ([pinned] if pinned else tank_ids)
 
         return self.async_show_form(
             step_id="reconfigure",

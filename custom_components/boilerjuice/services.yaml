@@ -4,7 +4,8 @@ reset_consumption:
     Reset the consumption counters, history and references to zero, and clear
     any manual daily consumption override. Targeting a tank resets that tank;
     targeting the account resets every tank on it. With more than one
-    BoilerJuice account configured, a target is required.
+    BoilerJuice account configured, a target is required, and it must name
+    one account: a target reaching two is refused rather than half-applied.
   target:
     device:
       integration: boilerjuice
@@ -24,7 +25,8 @@ set_consumption:
   name: Set consumption
   description: >-
     Manually set the consumption values for a tank. With more than one
-    BoilerJuice account configured, a target is required.
+    BoilerJuice account configured, a target is required, and it must name
+    one account: a target reaching two is refused rather than half-applied.
   target:
     device:
       integration: boilerjuice

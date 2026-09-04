@@ -102,9 +102,17 @@ class BoilerJuiceClient:
         return self._session
 
     async def async_close(self) -> None:
-        """Close the session. Called when the config entry unloads."""
+        """Release the session. Called when the config entry unloads.
+
+        detach(), not close(): Home Assistant replaces close() on the
+        sessions it hands out with a function that reports the misuse and
+        returns without closing anything, because the connector underneath is
+        shared. Awaiting close() therefore left every session registered and
+        logged a warning for the privilege. detach() is the supported way to
+        give one back, and is synchronous.
+        """
         if self._session is not None:
-            await self._session.close()
+            self._session.detach()
             self._session = None
         self._signed_in = False
 

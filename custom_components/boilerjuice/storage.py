@@ -21,7 +21,7 @@ from datetime import datetime
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
@@ -49,6 +49,10 @@ DatedHistory = list[tuple[datetime, float]]
 
 class InvalidStoredData(Exception):
     """The stored document could not be trusted."""
+
+
+class StorageWriteFailed(Exception):
+    """The document did not reach the disk."""
 
 
 @dataclass(slots=True)
@@ -453,8 +457,26 @@ class ConsumptionStore:
             return account, reason
 
     async def async_save(self, account: AccountState) -> None:
-        """Write `account`, replacing whatever was there."""
-        await self._store.async_save(document_from_account(account))
+        """Write `account`, and confirm it reached the disk.
+
+        Home Assistant's Store catches WriteError and SerializationError,
+        logs them, and returns normally, so a full disk looked exactly like a
+        successful write: the action reported success and published totals
+        that nothing had recorded. Reading the document back is the only way
+        to tell the two apart. The write invalidates the manager's cache and
+        clears the Store's pending data, so this really does hit the file.
+        """
+        document = document_from_account(account)
+        await self._store.async_save(document)
+
+        if self._hass.state is CoreState.stopping:
+            # During shutdown async_save queues the write for the final-write
+            # listener instead of performing it, so there is nothing on disk
+            # to compare against yet.
+            return
+
+        if await self._store.async_load() != document:
+            raise StorageWriteFailed(self.key)
 
     async def async_remove(self) -> None:
         """Delete this entry's document (called when the entry is removed)."""
