@@ -10,7 +10,7 @@ import voluptuous as vol
 from homeassistant.config_entries import SOURCE_IMPORT
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, Platform
 from homeassistant.core import HomeAssistant, ServiceCall, callback
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -83,7 +83,11 @@ def _entry_ids_for_devices(
     for device_id in device_ids:
         device = device_registry.async_get(device_id)
         if device is None:
-            raise HomeAssistantError(f"Unknown device_id {device_id}")
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="unknown_device",
+                translation_placeholders={"device_id": device_id},
+            )
         entry_ids |= {
             entry_id
             for entry_id in device_config_entry_ids(device)
@@ -101,7 +105,11 @@ def _entry_ids_for_entities(
     for entity_id in entity_ids:
         entry = entity_registry.async_get(entity_id)
         if entry is None:
-            raise HomeAssistantError(f"Unknown entity_id {entity_id}")
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="unknown_entity",
+                translation_placeholders={"entity_id": entity_id},
+            )
         if entry.config_entry_id is not None and entry.config_entry_id in known:
             entry_ids.add(entry.config_entry_id)
     return entry_ids
@@ -196,14 +204,14 @@ def _resolve_targets(
         # more than one, refuse rather than guess.
         if len(coordinators) == 1:
             return [(next(iter(coordinators.values())), None)]
-        raise HomeAssistantError(
+        raise ServiceValidationError(
             translation_domain=DOMAIN, translation_key="target_required"
         )
 
     entry_ids: set[str] = set()
     for entry_id in targets["entry_id"]:
         if entry_id not in coordinators:
-            raise HomeAssistantError(
+            raise ServiceValidationError(
                 translation_domain=DOMAIN,
                 translation_key="unknown_entry",
                 translation_placeholders={"entry_id": entry_id},
@@ -235,7 +243,7 @@ def _resolve_targets(
         targets[key] for key in ("device_id", "entity_id", "area_id", "label_id")
     )
     if tank_targets and not named_tanks:
-        raise HomeAssistantError(
+        raise ServiceValidationError(
             translation_domain=DOMAIN, translation_key="no_boilerjuice_target"
         )
 
@@ -449,15 +457,11 @@ async def async_unload_entry(
     if coordinator is not None:
         await coordinator.coordinator.async_close()
 
-    # Exclude this entry explicitly: whether it still counts as loaded while
-    # its own unload is in progress varies between Home Assistant versions.
-    others = [
-        other
-        for other in hass.config_entries.async_loaded_entries(DOMAIN)
-        if other.entry_id != entry.entry_id
-    ]
-    if not others:
-        async_unload_services(hass)
+    # The actions stay registered. They are set up in async_setup, not per
+    # entry, and the quality scale expects them to answer even with no entry
+    # loaded - which _resolve_targets already does, with a translated "no
+    # BoilerJuice accounts are currently loaded". Removing them turned that
+    # into "unknown service", which tells an automation author nothing.
     return True
 
 

@@ -314,3 +314,48 @@ def test_an_unrecognised_listing_is_not_proof_that_the_tanks_are_gone(
     """
     with pytest.raises(BoilerJuiceParseError):
         parse_tank_ids(html)
+
+
+@pytest.mark.parametrize(
+    "status_line",
+    [
+        pytest.param("No tanks need a delivery today", id="delivery"),
+        pytest.param("No tanks need filling this week", id="filling"),
+        pytest.param("No tanks require attention", id="attention"),
+        pytest.param("Good news: no tanks need topping up", id="topping-up"),
+        pytest.param("No tanks are low", id="low"),
+    ],
+)
+def test_a_status_line_mentioning_tanks_is_not_an_empty_account(
+    status_line: str,
+) -> None:
+    """A bare "no tanks" described the very tanks it would have retired.
+
+    A footer reading "No tanks need a delivery today" sits on a populated
+    page. Searching the whole page for the phrase accepted it as proof the
+    account was empty; the message has to match in full.
+    """
+    html = (
+        "<html><body><h1>Your tanks</h1>"
+        '<div class="card" data-tank="123456">Garden Tank</div>'
+        f"<footer>{status_line}</footer></body></html>"
+    )
+
+    with pytest.raises(BoilerJuiceParseError):
+        parse_tank_ids(html)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        pytest.param("You have no tanks yet.", id="have-no-tanks"),
+        pytest.param("There are no tanks.", id="there-are-none"),
+        pytest.param("No tanks added", id="none-added"),
+        pytest.param("You have not added a tank yet.", id="not-added"),
+        pytest.param("You haven’t added any tanks", id="curly-apostrophe"),  # noqa: RUF001
+        pytest.param("You don’t have any tanks", id="dont-have-any"),  # noqa: RUF001
+        pytest.param("— No tanks —", id="decorated"),
+    ],
+)
+def test_a_complete_empty_account_message_is_accepted(message: str) -> None:
+    assert parse_tank_ids(f"<html><body><p>{message}</p></body></html>") == []

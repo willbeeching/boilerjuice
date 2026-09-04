@@ -140,6 +140,12 @@
     },
     "no_reading_yet": {
       "message": "That BoilerJuice tank has no reading yet, so there is nothing to set the consumption against. Wait for a successful update and try again."
+    },
+    "unknown_device": {
+      "message": "There is no device with ID {device_id}."
+    },
+    "unknown_entity": {
+      "message": "There is no entity with ID {entity_id}."
     }
   }
 }

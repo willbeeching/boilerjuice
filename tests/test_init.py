@@ -10,6 +10,7 @@ from custom_components.boilerjuice import (
 from custom_components.boilerjuice.const import CONF_EMAIL, CONF_PASSWORD, DOMAIN
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
@@ -37,16 +38,28 @@ async def test_setup_registers_the_device_and_services(
     assert device.manufacturer == "BoilerJuice"
 
 
-async def test_unload_closes_the_session_and_removes_the_services(
+async def test_unloading_leaves_the_actions_registered(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
+    """The actions belong to the integration, not to an entry.
+
+    Removing them on the last unload turned a call into "unknown service",
+    which tells an automation author nothing. They stay, and answer with a
+    translated "no BoilerJuice accounts are currently loaded".
+    """
     entry = await setup_account(hass, aioclient_mock)
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
 
     assert entry.state is ConfigEntryState.NOT_LOADED
-    assert not hass.services.has_service(DOMAIN, SERVICE_RESET_CONSUMPTION)
+    assert hass.services.has_service(DOMAIN, SERVICE_RESET_CONSUMPTION)
+
+    with pytest.raises(HomeAssistantError) as raised:
+        await hass.services.async_call(
+            DOMAIN, SERVICE_RESET_CONSUMPTION, {}, blocking=True
+        )
+    assert raised.value.translation_key == "no_accounts_loaded"
 
 
 async def test_the_services_survive_unloading_one_of_two_accounts(

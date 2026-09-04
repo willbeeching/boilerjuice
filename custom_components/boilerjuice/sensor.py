@@ -323,7 +323,8 @@ async def async_setup_entry(
     @callback
     def _async_add_new_tanks(tank_ids: list[str]) -> None:
         """Add entities for tanks that appeared after setup."""
-        async_add_entities(build(tank_ids))
+        if entities := build(tank_ids):
+            async_add_entities(entities)
 
     coordinator.async_add_new_tank_listener(_async_add_new_tanks)
 

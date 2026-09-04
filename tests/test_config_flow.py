@@ -294,6 +294,37 @@ async def test_reauth_rejects_a_password_that_still_does_not_work(
     assert result["errors"] == {"base": "invalid_auth"}
 
 
+@pytest.mark.parametrize("bad", [0, -1, 0.05, 101, "not a number"])
+async def test_the_form_refuses_an_impossible_energy_content(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, bad: object
+) -> None:
+    """The coordinator falls back to the default; the form should say no first."""
+    mock_account(aioclient_mock)
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+
+    with pytest.raises(data_entry_flow.InvalidData):
+        await hass.config_entries.flow.async_configure(
+            result["flow_id"], {**USER_INPUT, CONF_KWH_PER_LITRE: bad}
+        )
+
+
+async def test_reconfigure_refuses_an_impossible_energy_content(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    entry = await setup_account(hass, aioclient_mock, tank_id=None)
+    mock_account(aioclient_mock)
+
+    result = await entry.start_reconfigure_flow(hass)
+    with pytest.raises(data_entry_flow.InvalidData):
+        await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_KWH_PER_LITRE: 0, CONF_TANKS: []}
+        )
+
+    assert CONF_KWH_PER_LITRE not in entry.options
+
+
 # --- reconfiguration ------------------------------------------------------
 
 

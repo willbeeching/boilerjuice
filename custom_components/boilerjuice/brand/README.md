@@ -1,24 +1,25 @@
 # Brand Assets
 
-This directory contains the brand assets for the BoilerJuice integration.
+Images Home Assistant serves for this integration when it is installed as a
+custom integration. Support for reading them from here landed in Home
+Assistant 2026.3; older versions fall back to the `home-assistant/brands`
+repository, so a submission there is still what covers 2025.2 through 2026.2.
 
-## Required Files
+## Files
 
-1. `icon.png`: Square icon (256x256 pixels)
+| File          | Size      | Used for                                     |
+| ------------- | --------- | -------------------------------------------- |
+| `icon.png`    | 256x256   | Integrations page, device pages, search       |
+| `icon@2x.png` | 512x512   | The same, on high-density displays            |
+| `logo.png`    | 1001x238  | Config flow header and the integration page   |
+| `logo@2x.png` | 2001x476  | The same, on high-density displays            |
 
-   - Used in the integrations page
-   - Should be a simple, recognizable symbol
-   - Preferably with a transparent background
-
-2. `logo.png`: Rectangular logo (256x256 pixels)
-   - Used in the configuration flow
-   - Can be more detailed than the icon
-   - Can include the BoilerJuice text logo
-   - Preferably with a transparent background
+The icon is square. The logo is not: it carries the BoilerJuice wordmark, so
+it is wider than it is tall.
 
 ## Guidelines
 
-- Use PNG format with transparency
-- Keep file sizes small (optimize the images)
-- Use the official BoilerJuice brand colors where possible
-- Make sure the icons are clearly visible on both light and dark themes
+- PNG with transparency, so both light and dark themes work
+- Keep the files small; optimise before committing
+- Use the official BoilerJuice colours
+- Each `@2x` file is exactly twice the base file in both dimensions

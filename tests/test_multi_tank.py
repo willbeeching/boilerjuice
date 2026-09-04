@@ -16,6 +16,7 @@ from custom_components.boilerjuice.const import (
 )
 from custom_components.boilerjuice.coordinator import MISSING_LISTINGS_BEFORE_REMOVAL
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
@@ -574,7 +575,8 @@ async def test_unloading_two_accounts_at_once_is_clean(
     )
 
     assert results == [True, True]
-    assert not hass.services.has_service(DOMAIN, SERVICE_RESET_CONSUMPTION)
+    # The actions outlive the entries that used them.
+    assert hass.services.has_service(DOMAIN, SERVICE_RESET_CONSUMPTION)
 
 
 async def test_a_redesigned_listing_page_cannot_erase_the_history(
@@ -726,3 +728,89 @@ async def test_a_redesigned_populated_listing_does_not_retire_the_tanks(
         )
         is not None
     )
+
+
+async def test_a_tank_added_after_every_previous_one_was_retired_gets_entities(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """The device appeared with nothing on it.
+
+    The discovery callback only fired when the account already had a tank,
+    so an account that had lost all of them never got entities for the next
+    one it gained.
+    """
+    from custom_components.boilerjuice.coordinator import (
+        MISSING_LISTINGS_BEFORE_REMOVAL,
+    )
+
+    mock_account(aioclient_mock, ONE_TANK)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_EMAIL: "someone@example.com", CONF_PASSWORD: "hunter2"},
+        unique_id="someone@example.com",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = coordinator_of(entry)
+    assert coordinator.tank_ids == [FIRST]
+
+    # Every tank goes.
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(LOGIN_URL, text=load_fixture("login.html"))
+    aioclient_mock.post(LOGIN_URL, text=SIGNED_IN_PAGE)
+    aioclient_mock.get(
+        TANKS_URL, text="<html><body><p>You have no tanks yet.</p></body></html>"
+    )
+    aioclient_mock.get(PRICE_URL, text=PRICE_PAGE)
+
+    for _ in range(MISSING_LISTINGS_BEFORE_REMOVAL):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    assert coordinator.tank_ids == []
+    assert tank_device(hass, entry, FIRST) is None
+
+    # A different tank appears.
+    mock_account(aioclient_mock, ONE_TANK.replace(FIRST, SECOND))
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    assert coordinator.tank_ids == [SECOND]
+    assert tank_device(hass, entry, SECOND) is not None
+    # ...and it has its sensors, not just a bare device.
+    registry = er.async_get(hass)
+    assert (
+        registry.async_get_entity_id("sensor", DOMAIN, f"{SECOND}_oil_level")
+        is not None
+    )
+    assert hass.states.get(_entity_for(hass, SECOND, "oil_level")).state == "40.0"
+
+
+async def test_removing_a_tank_uses_the_supported_registry_call(
+    hass: HomeAssistant, account: MockConfigEntry, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """async_update_device(remove_config_entry_id=...) breaks in 2027.8."""
+    from unittest.mock import patch
+
+    from custom_components.boilerjuice.coordinator import (
+        MISSING_LISTINGS_BEFORE_REMOVAL,
+    )
+
+    coordinator = coordinator_of(account)
+    mock_account(aioclient_mock, ONE_TANK)
+
+    registry = dr.async_get(hass)
+    with patch.object(
+        registry, "async_update_device", wraps=registry.async_update_device
+    ) as updated:
+        for _ in range(MISSING_LISTINGS_BEFORE_REMOVAL):
+            await coordinator.async_refresh()
+            await hass.async_block_till_done()
+
+    assert coordinator.tank_ids == [FIRST]
+    assert tank_device(hass, account, SECOND) is None
+    assert not [
+        call for call in updated.mock_calls if "remove_config_entry_id" in str(call)
+    ]

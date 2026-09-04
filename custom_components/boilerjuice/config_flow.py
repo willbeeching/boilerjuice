@@ -31,15 +31,21 @@ from .errors import BoilerJuiceAuthError, BoilerJuiceConnectionError, BoilerJuic
 from .helpers import normalise_email
 from .parser import validate_tank_id
 
+# Energy content has to be a positive, finite number: it multiplies every
+# litre into kWh and divides the price into a cost per kWh. Validated here
+# as well as in the coordinator, so the form says no rather than accepting a
+# value that is silently replaced by the default on the next poll.
+ENERGY_CONTENT = vol.All(
+    vol.Coerce(float), vol.Range(min=0.1, min_included=True, max=100)
+)
+
 _LOGGER = logging.getLogger(__name__)
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_EMAIL): str,
         vol.Required(CONF_PASSWORD): str,
-        vol.Optional(CONF_KWH_PER_LITRE, default=DEFAULT_KWH_PER_LITRE): vol.Coerce(
-            float
-        ),
+        vol.Optional(CONF_KWH_PER_LITRE, default=DEFAULT_KWH_PER_LITRE): ENERGY_CONTENT,
     }
 )
 
@@ -241,7 +247,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             CONF_KWH_PER_LITRE,
                             entry.data.get(CONF_KWH_PER_LITRE, DEFAULT_KWH_PER_LITRE),
                         ),
-                    ): vol.Coerce(float),
+                    ): ENERGY_CONTENT,
                     vol.Optional(CONF_TANKS, default=current): SelectSelector(
                         SelectSelectorConfig(
                             options=[

@@ -1,6 +1,8 @@
 # Current Home Assistant lane. pytest-homeassistant-custom-component pins the
-# Home Assistant version the suite runs against, so pinning it exactly pins
-# the whole test environment.
+# Home Assistant version the suite runs against, so pinning it exactly fixes
+# which Home Assistant the suite exercises. It does not pin the environment:
+# everything Home Assistant itself depends on still resolves afresh at
+# install time, which is how a green run and a red one can share this file.
 #
 # The annotations below are read by scripts/check_versions.py, which checks
 # them against the Python versions in the CI matrix. Bumping this pin without

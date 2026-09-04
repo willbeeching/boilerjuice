@@ -487,9 +487,12 @@ class BoilerJuiceDataUpdateCoordinator(
             return
         device = async_tank_device(self.hass, tank_id, self._entry_id)
         if device is not None:
-            dr.async_get(self.hass).async_update_device(
-                device.id, remove_config_entry_id=self._entry_id
-            )
+            # Not async_update_device(remove_config_entry_id=...): Home
+            # Assistant 2026.9 reports that as deprecated and due to stop
+            # working in 2027.8, because a device now belongs to exactly one
+            # config entry. async_remove_device exists as far back as the
+            # supported floor, so this needs no bump.
+            dr.async_get(self.hass).async_remove_device(device.id)
 
     def _claim_unassigned(self, tank_ids: list[str]) -> None:
         """Attach migrated v1 history to its tank, if we can tell which.
@@ -664,10 +667,14 @@ class BoilerJuiceDataUpdateCoordinator(
 
         self._register_devices(published)
 
+        # No `and known_before` guard: the first refresh happens before the
+        # platforms register their listeners, so there is nobody to notify
+        # then anyway. Requiring a non-empty `known_before` meant an account
+        # whose every tank had been retired never got entities for the next
+        # tank it gained - the device appeared, with nothing on it.
         discovered = [tank_id for tank_id in published if tank_id not in known_before]
-        if discovered and known_before:
-            for listener in self._new_tank_listeners:
-                listener(discovered)
+        for listener in self._new_tank_listeners:
+            listener(discovered)
 
         return published
 

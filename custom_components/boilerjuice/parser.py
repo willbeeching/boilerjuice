@@ -33,21 +33,28 @@ _TANK_LINK_RE = re.compile(r"/uk/users/tanks/(\d+)")
 _OIL_VOLUME_RE = re.compile(r"(\d+)\s*litres?\s+(?:of\s+)?oil")
 _PRICE_RE = re.compile(r"(\d+\.\d+)\s*pence per litre")
 
-# Positive evidence that a tanks page really is showing an empty account,
-# rather than being a page we no longer recognise. This has to be a statement
-# that the account has no tanks, not merely an invitation to add one: an
-# "Add another tank" control sits happily on a populated page, so accepting
-# it made a redesigned populated account parse as empty.
+# Positive evidence that a tanks page really is showing an empty account.
+# Each of these has to match a whole piece of text on the page, not appear
+# somewhere inside one: "no tanks" as a substring turns a footer reading
+# "No tanks need a delivery today" into proof that the account is empty,
+# which then retires the very tanks the sentence was talking about.
+#
+# An invitation to add a tank is not on this list either: "Add another tank"
+# belongs on a populated page.
 _NO_TANKS_RE = re.compile(
     r"""
-      (?:\bno|\bnot\s+any|n[o']t\s+have\s+any|do\s+not\s+have\s+any)
-      \s+tanks?\b
-    | (?:have\s+|haven[o']?t\s+|has\s+)?n[o']?t\s+added\s+(?:a|any)\s+tanks?\b
-    | add\s+your\s+first\s+tank\b
-    | \bfirst\s+tank\s+to\s+get\s+started\b
+      (?:you\s+)?have\s+no\s+tanks?(?:\s+yet)?
+    | (?:there\s+are\s+)?no\s+tanks?(?:\s+(?:yet|added|here|set\s+up|configured))?
+    | you\s+have\s+not\s+added\s+(?:a|any)\s+tanks?(?:\s+yet)?
+    | you\s+haven[\u2019']?t\s+added\s+(?:a|any)\s+tanks?(?:\s+yet)?
+    | you\s+do\s*n[\u2019']?t\s+have\s+any\s+tanks?(?:\s+yet)?
+    | add\s+your\s+first\s+tank
     """,
     re.I | re.VERBOSE,
 )
+
+# Punctuation and decoration a real page wraps such a message in.
+_TRIM = " \t\r\n.!:\u2014-\u2022*"
 
 _SHAPES = ("cuboid", "horizontal_cylinder", "vertical_cylinder")
 
@@ -170,12 +177,17 @@ def parse_price(html: str) -> float | None:
 def looks_like_empty_tank_list(soup: BeautifulSoup) -> bool:
     """Return True when the page states that the account has no tanks.
 
-    Only an explicit statement counts. A link or button offering to add a
-    tank is not one: "Add another tank" belongs on a populated page, and
-    accepting it meant a populated account whose tank markup had changed
-    parsed as empty and had its devices quietly retired.
+    Matched against each piece of text on the page in full, not searched for
+    within the page as a whole. Searching accepted "No tanks need a delivery
+    today" - an ordinary status line on a populated page - as proof that the
+    account was empty, and three such polls retire the tanks it was
+    describing.
     """
-    return _NO_TANKS_RE.search(soup.get_text(" ")) is not None
+    for text in soup.stripped_strings:
+        message = " ".join(text.split()).strip(_TRIM)
+        if message and _NO_TANKS_RE.fullmatch(message):
+            return True
+    return False
 
 
 def parse_tank_ids(html: str) -> list[str]:

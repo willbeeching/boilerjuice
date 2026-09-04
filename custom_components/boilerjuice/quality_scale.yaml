@@ -21,8 +21,11 @@ rules:
     status: done
     comment: >-
       Actions are registered in async_setup and validated with voluptuous
-      schemas. Targets are resolved to a specific account and tank, and an
-      unresolvable target raises rather than fanning out.
+      schemas. They stay registered while any config entry exists, including
+      after the last entry unloads, so a target that cannot be resolved gets
+      a translated explanation instead of an unknown-service error. Targets
+      resolve to a specific account and tank, and an unresolvable one raises
+      ServiceValidationError rather than fanning out.
   appropriate-polling:
     status: done
     comment: >-
@@ -174,8 +177,10 @@ rules:
   dynamic-devices:
     status: done
     comment: >-
-      Tanks added to the account get entities without a restart; tanks are
-      removed only after three consecutive authoritative listings omit them.
+      Tanks added to the account get entities without a restart, including
+      the first tank added after every earlier one was retired. Tanks are
+      removed only after three consecutive authoritative listings omit them,
+      via async_remove_device.
   entity-category:
     status: done
   entity-device-class:
@@ -195,6 +200,11 @@ rules:
     comment: translation_key on every sensor, with translations/en.json.
   exception-translations:
     status: done
+    comment: >-
+      Every error raised at a user is a HomeAssistantError subclass with a
+      translation_key, including the ServiceValidationError raised for an
+      action target that names a device, entity or config entry this
+      integration does not own.
   icon-translations:
     status: done
     comment: icons.json, keyed by translation key. A test keeps the two in step.
