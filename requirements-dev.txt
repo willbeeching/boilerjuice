@@ -12,4 +12,4 @@ pip-audit==2.10.1
 # lane, and Home Assistant pins PyYAML exactly, so an exact pin here becomes
 # an unsatisfiable resolution the day Home Assistant moves. A test asserts
 # nothing in this file collides with Home Assistant's own pins.
-PyYAML>=6.0.2,<7
+PyYAML>=6.0.3,<7
