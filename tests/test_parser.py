@@ -8,7 +8,10 @@ then recorded as the whole tank being burnt in one hour.
 
 from __future__ import annotations
 
+import json
+
 import pytest
+from custom_components.boilerjuice import parser
 from custom_components.boilerjuice.errors import (
     BoilerJuiceAuthError,
     BoilerJuiceParseError,
@@ -476,3 +479,84 @@ def test_a_malformed_entry_does_not_hide_a_good_one_after_it() -> None:
 
     assert reading.manufacturer == "Titan"
     assert reading.model == "ES2500"
+
+
+# --- describing a page we cannot read -------------------------------------
+
+CHALLENGE = """
+<html><head><title>Just a moment...</title></head>
+<body><div class="cf-browser-verification">Checking your browser</div>
+<script>window._cf_chl_opt={};</script></body></html>
+"""
+
+SECRET_PAGE = """
+<html><body>
+  <h1>Welcome back, Wilhelmina Bracegirdle</h1>
+  <p>will@together.agency</p>
+  <p>Tank 998877 at 12 Sycamore Lane, Tunbridge Wells</p>
+  <input type="hidden" name="authenticity_token" value="s3cr3t-csrf-value">
+</body></html>
+"""
+
+
+def test_the_shape_of_a_challenge_page_is_recognisable() -> None:
+    """A layout change and a bot challenge used to look identical."""
+    shape = parser.describe_page_shape(CHALLENGE)
+
+    assert shape["looks_like_interstitial"] == ["cloudflare"]
+    assert shape["tank_links"] == 0
+    assert shape["is_html"] is True
+
+
+def test_the_shape_of_a_real_tanks_page_names_no_interstitial() -> None:
+    shape = parser.describe_page_shape(load_fixture("tanks_list.html"))
+
+    assert shape["looks_like_interstitial"] == []
+    assert shape["tank_links"] > 0
+
+
+def test_the_shape_carries_no_page_content() -> None:
+    """Page HTML is never reproduced, at any level. Counts only.
+
+    The whole point of the describer is to be safe to log and to paste
+    into an issue, so nothing from the document may survive into it.
+    """
+    shape = parser.describe_page_shape(SECRET_PAGE)
+    serialised = json.dumps(shape)
+
+    for secret in (
+        "Wilhelmina",
+        "Bracegirdle",
+        "will@together.agency",
+        "998877",
+        "Sycamore",
+        "Tunbridge",
+        "s3cr3t-csrf-value",
+        "authenticity_token",
+    ):
+        assert secret not in serialised, f"the page shape leaked {secret!r}"
+
+    # Only counts, booleans and our own fixed words.
+    assert set(shape) == {
+        "bytes",
+        "is_html",
+        "forms",
+        "password_inputs",
+        "links",
+        "tank_links",
+        "scripts",
+        "looks_like_interstitial",
+    }
+    for key, value in shape.items():
+        if key == "looks_like_interstitial":
+            assert set(value) <= set(parser._INTERSTITIAL_MARKERS)
+        else:
+            assert isinstance(value, (int, bool))
+
+
+def test_an_unreadable_tanks_page_reports_its_shape() -> None:
+    """The reason a user reads in the UI should say what arrived."""
+    with pytest.raises(BoilerJuiceParseError) as caught:
+        parse_tank_ids(CHALLENGE)
+
+    assert "cloudflare" in str(caught.value)

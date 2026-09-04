@@ -98,8 +98,38 @@ def _rows_by_month(tracker: TankTracker) -> dict[str, int]:
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: BoilerJuiceConfigEntry
 ) -> dict[str, Any]:
-    """Return diagnostics for one BoilerJuice account."""
-    coordinator = entry.runtime_data.coordinator
+    """Return diagnostics for one BoilerJuice account.
+
+    An entry that failed to set up has no runtime data, and asking for it
+    raised AttributeError, which Home Assistant served as HTTP 500. The
+    download was therefore unavailable at the one moment anybody wants
+    it: while the integration is stuck in setup_retry. What the config
+    entry knows is reported on its own in that case.
+    """
+    runtime = getattr(entry, "runtime_data", None)
+    if runtime is None:
+        return {
+            "config_entry_id": entry.entry_id,
+            "data": {
+                "integration": {
+                    "config_entry_version": entry.version,
+                    "storage_version": STORAGE_VERSION,
+                    "source": entry.source,
+                    "tank_is_pinned": bool(entry.data.get(CONF_TANK_ID)),
+                    "tanks_are_filtered": bool(entry.options.get(CONF_TANKS)),
+                },
+                "update_health": {
+                    "set_up": False,
+                    "state": str(entry.state),
+                    # The setup failure's own message. Parse failures carry
+                    # the page shape, which is counts and fixed words only.
+                    "reason": entry.reason,
+                },
+                "tanks": [],
+            },
+        }
+
+    coordinator = runtime.coordinator
     published = coordinator.data or {}
 
     return {

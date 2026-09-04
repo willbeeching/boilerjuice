@@ -215,6 +215,13 @@ Other behaviour worth knowing:
   the seasonal sensor has no autumn to report. When that drop arrives the
   litres are spread back over every day since the last one, so the days in
   between fill in retroactively rather than being lost.
+- **A page we cannot read is described, not quoted.** When the tanks page
+  or a tank page arrives in a shape the parser does not recognise, the
+  warning carries a summary of the page: its size, how many forms, links
+  and tank links it holds, and whether it matches a known interstitial such
+  as a Cloudflare challenge or a maintenance notice. Page HTML is never
+  logged, so the summary is counts and fixed words only, and is safe to
+  paste into an issue.
 - **Diagnostics say where the history reaches.** `history_span` and
   `history_rows_by_month` in the diagnostics download show which months hold
   data. A month missing from the middle is history that went away; months

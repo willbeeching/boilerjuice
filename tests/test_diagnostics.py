@@ -196,3 +196,26 @@ async def test_diagnostics_report_no_span_without_history(
 
     assert tank["history_span"] is None
     assert tank["history_rows_by_month"] == {}
+
+
+async def test_diagnostics_work_while_setup_is_failing(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """The one moment anybody wants the download is when setup is stuck.
+
+    Reading runtime_data off an entry that never finished setting up
+    raised AttributeError, which Home Assistant served as HTTP 500.
+    """
+    mock_site(aioclient_mock, tank_html=load_fixture("tank_current.html"))
+    entry = await setup_account(hass, aioclient_mock)
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    report = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert report["data"]["update_health"]["set_up"] is False
+    assert report["data"]["tanks"] == []
+    assert json.dumps(report)
+
+    for secret in SECRETS:
+        assert secret not in json.dumps(report), f"diagnostics leaked {secret!r}"

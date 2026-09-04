@@ -231,6 +231,50 @@ def looks_like_empty_tank_list(soup: BeautifulSoup) -> bool:
     return False
 
 
+# Vendor strings that identify an interstitial rather than the page asked
+# for. Matched case-insensitively against the document, and reported only
+# as which one matched: a fixed list of our own words, never page content.
+_INTERSTITIAL_MARKERS = {
+    "cloudflare": ("cf-browser-verification", "cf-challenge", "just a moment"),
+    "blocked": ("attention required", "access denied", "request blocked"),
+    "rate_limited": ("too many requests", "rate limit"),
+    "maintenance": ("under maintenance", "temporarily unavailable"),
+}
+
+
+def describe_page_shape(html: str) -> dict[str, Any]:
+    """Describe an unexpected page without reproducing any of it.
+
+    A page we cannot read is invisible by design: page HTML is never
+    logged, at any level, because it carries the account. That left a
+    layout change, a Cloudflare challenge and a maintenance page looking
+    identical from the outside, which is no way to diagnose an install
+    you cannot reach.
+
+    Everything below is a count, a boolean, or one of our own fixed
+    words. No text from the page is copied into the result.
+    """
+    lowered = html.lower()
+    soup = BeautifulSoup(html, "html.parser")
+
+    interstitial = sorted(
+        name
+        for name, markers in _INTERSTITIAL_MARKERS.items()
+        if any(marker in lowered for marker in markers)
+    )
+
+    return {
+        "bytes": len(html),
+        "is_html": soup.find("html") is not None or soup.find("body") is not None,
+        "forms": len(soup.find_all("form")),
+        "password_inputs": len(soup.find_all("input", {"type": "password"})),
+        "links": len(soup.find_all("a")),
+        "tank_links": len(soup.find_all("a", href=_TANK_LINK_RE)),
+        "scripts": len(soup.find_all("script")),
+        "looks_like_interstitial": interstitial,
+    }
+
+
 def parse_tank_ids(html: str) -> list[str]:
     """Return the validated tank ids linked from the tanks listing page.
 
@@ -257,9 +301,12 @@ def parse_tank_ids(html: str) -> list[str]:
     if tank_ids or looks_like_empty_tank_list(soup):
         return tank_ids
 
+    # The shape goes in the message so the reason a user reads in the UI
+    # says what kind of page arrived, not merely that one did.
     raise BoilerJuiceParseError(
         "The BoilerJuice tanks page listed no tanks and did not look like an "
-        "empty account; refusing to treat it as proof that the tanks are gone"
+        "empty account; refusing to treat it as proof that the tanks are gone "
+        f"(page shape: {describe_page_shape(html)})"
     )
 
 
@@ -453,7 +500,8 @@ def parse_tank_page(html: str, tank_id: str) -> TankReading:
     if not reading.has_measurement:
         raise BoilerJuiceParseError(
             "The BoilerJuice tank page contained neither an oil level nor an "
-            "oil volume; refusing to treat it as a reading"
+            f"oil volume; refusing to treat it as a reading "
+            f"(page shape: {describe_page_shape(html)})"
         )
 
     return reading
