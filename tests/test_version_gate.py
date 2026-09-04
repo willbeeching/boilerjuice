@@ -427,6 +427,25 @@ def test_the_release_workflow_does_not_carry_its_own_version_rule() -> None:
     )
 
 
+def test_the_package_job_installs_what_check_versions_imports() -> None:
+    """v2.0.0-beta.3 failed: check_versions.py imports yaml, the job did not.
+
+    The validate job installs requirements-dev.txt. The package job used to
+    run the same script on a bare Python, so the first release that reached
+    this step died on ModuleNotFoundError: yaml.
+    """
+    steps = _release_workflow()["jobs"]["package"]["steps"]
+    names = [step.get("name", "") for step in steps]
+    assert "Install dependencies" in names, names
+    assert names.index("Install dependencies") < names.index(
+        "Validate the tag against the manifest and the HACS floor"
+    )
+    script = next(
+        step["run"] for step in steps if step.get("name") == "Install dependencies"
+    )
+    assert "requirements-dev.txt" in script
+
+
 @pytest.mark.parametrize(
     "ref",
     ["refs/tags/v2.0.0", "refs/tags/v2.0.0-beta.1", "refs/tags/v10.2.3-rc.2"],

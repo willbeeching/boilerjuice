@@ -33,6 +33,13 @@ jobs:
         with:
           python-version: "3.14"
 
+      - name: Install dependencies
+        # check_versions.py reads quality_scale.yaml, so PyYAML has to be
+        # here. v2.0.0-beta.3 failed at this step with ModuleNotFoundError.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
       - name: Read the tag
         id: version
         # Reads the tag and nothing else. What counts as a valid version is
