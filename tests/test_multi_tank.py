@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import pytest
-from custom_components.boilerjuice import SERVICE_RESET_CONSUMPTION
+from custom_components.boilerjuice import (
+    SERVICE_RESET_CONSUMPTION,
+    SERVICE_SET_CONSUMPTION,
+)
 from custom_components.boilerjuice.const import (
     CONF_EMAIL,
     CONF_PASSWORD,
@@ -16,6 +19,7 @@ from custom_components.boilerjuice.const import (
 )
 from custom_components.boilerjuice.coordinator import MISSING_LISTINGS_BEFORE_REMOVAL
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -26,6 +30,7 @@ from .helpers import (
     SIGNED_IN_PAGE,
     coordinator_of,
     load_fixture,
+    reconfigure,
     tank_device,
     tank_page,
     tracker_of,
@@ -260,8 +265,7 @@ async def test_excluding_a_tank_removes_its_device_immediately(
     coordinator = coordinator_of(account)
     assert sorted(coordinator.tank_ids) == [FIRST, SECOND]
 
-    hass.config_entries.async_update_entry(account, options={CONF_TANKS: [SECOND]})
-    await hass.async_block_till_done()
+    await reconfigure(hass, account, options={CONF_TANKS: [SECOND]})
 
     assert coordinator_of(account).tank_ids == [SECOND]
     assert tank_device(hass, account, FIRST) is None
@@ -276,11 +280,8 @@ async def test_excluding_a_tank_keeps_its_history_for_when_it_returns(
     await coordinator.async_set_consumption(40.0, tank_id=FIRST)
     await hass.async_block_till_done()
 
-    hass.config_entries.async_update_entry(account, options={CONF_TANKS: [SECOND]})
-    await hass.async_block_till_done()
-
-    hass.config_entries.async_update_entry(account, options={CONF_TANKS: []})
-    await hass.async_block_till_done()
+    await reconfigure(hass, account, options={CONF_TANKS: [SECOND]})
+    await reconfigure(hass, account, options={CONF_TANKS: []})
 
     assert tracker_of(coordinator_of(account), FIRST).total_litres == 40.0
 
@@ -291,10 +292,7 @@ async def test_pinning_one_tank_removes_the_other(
     coordinator = coordinator_of(account)
     assert sorted(coordinator.tank_ids) == [FIRST, SECOND]
 
-    hass.config_entries.async_update_entry(
-        account, data={**account.data, CONF_TANK_ID: SECOND}
-    )
-    await hass.async_block_till_done()
+    await reconfigure(hass, account, data={**account.data, CONF_TANK_ID: SECOND})
 
     assert coordinator_of(account).tank_ids == [SECOND]
 
@@ -814,3 +812,127 @@ async def test_removing_a_tank_uses_the_supported_registry_call(
     assert not [
         call for call in updated.mock_calls if "remove_config_entry_id" in str(call)
     ]
+
+
+async def test_a_status_line_split_by_inline_markup_does_not_retire_the_tanks(
+    hass: HomeAssistant, account: MockConfigEntry, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """A fragment inside a <strong> is still part of the sentence around it.
+
+    The listing here is a populated page whose only unrecognised part is a
+    footer reading "No tanks need a delivery today", with two of its words
+    emphasised. Reading text nodes one at a time saw the fragment on its
+    own, called the account empty, and retired both devices.
+    """
+    from custom_components.boilerjuice.coordinator import (
+        MISSING_LISTINGS_BEFORE_REMOVAL,
+        PARSE_FAILURES_BEFORE_REPAIR,
+    )
+
+    coordinator = coordinator_of(account)
+
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(LOGIN_URL, text=load_fixture("login.html"))
+    aioclient_mock.post(LOGIN_URL, text=SIGNED_IN_PAGE)
+    aioclient_mock.get(
+        TANKS_URL,
+        text=(
+            "<html><body><h1>Your tanks</h1>"
+            f'<div class="tank-card" data-tank="{FIRST}"><h2>Garden</h2></div>'
+            f'<div class="tank-card" data-tank="{SECOND}"><h2>Barn</h2></div>'
+            "<footer><p><strong>No tanks</strong> need a delivery today</p>"
+            "<p>Good news: <b>no tanks</b> are low</p></footer>"
+            "</body></html>"
+        ),
+    )
+    aioclient_mock.get(PRICE_URL, text=PRICE_PAGE)
+
+    for _ in range(
+        max(MISSING_LISTINGS_BEFORE_REMOVAL, PARSE_FAILURES_BEFORE_REPAIR) + 1
+    ):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    assert sorted(coordinator.tank_ids) == [FIRST, SECOND]
+    assert tank_device(hass, account, FIRST) is not None
+    assert tank_device(hass, account, SECOND) is not None
+
+
+async def test_setting_the_account_total_refuses_while_one_tank_is_offline(
+    hass: HomeAssistant, account: MockConfigEntry
+) -> None:
+    """An account-wide set is all tanks or none of them.
+
+    The handler only asked whether the account had any data at all, so with
+    one tank offline the other still took the new total. The offline tank
+    got the total without a new reference, and booked the difference as
+    consumption the moment it came back.
+    """
+    coordinator = coordinator_of(account)
+    tracker_of(coordinator, FIRST).state.total_litres = 40.0
+    tracker_of(coordinator, SECOND).state.total_litres = 90.0
+
+    published = dict(coordinator.data)
+    del published[SECOND]
+    coordinator.async_set_updated_data(published)
+    await hass.async_block_till_done()
+
+    with pytest.raises(HomeAssistantError) as raised:
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_SET_CONSUMPTION,
+            {"liters": 1000.0, "entry_id": account.entry_id},
+            blocking=True,
+        )
+
+    assert raised.value.translation_key == "tanks_without_readings"
+    assert SECOND in (raised.value.translation_placeholders or {})["tanks"]
+    assert tracker_of(coordinator, FIRST).total_litres == 40.0
+    assert tracker_of(coordinator, SECOND).total_litres == 90.0
+
+
+async def test_setting_one_tanks_total_still_works_while_the_other_is_offline(
+    hass: HomeAssistant, account: MockConfigEntry
+) -> None:
+    """Refusing the account-wide call must not refuse the specific one."""
+    coordinator = coordinator_of(account)
+    tracker_of(coordinator, SECOND).state.total_litres = 90.0
+
+    published = dict(coordinator.data)
+    del published[SECOND]
+    coordinator.async_set_updated_data(published)
+    await hass.async_block_till_done()
+
+    device = tank_device(hass, account, FIRST)
+    assert device is not None
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_SET_CONSUMPTION,
+        {"liters": 1000.0, "device_id": device.id},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert tracker_of(coordinator, FIRST).total_litres == 1000.0
+    assert tracker_of(coordinator, SECOND).total_litres == 90.0
+
+
+async def test_the_coordinator_refuses_the_same_call_on_its_own(
+    hass: HomeAssistant, account: MockConfigEntry
+) -> None:
+    """The invariant belongs to the coordinator, not only to the handler."""
+    coordinator = coordinator_of(account)
+
+    published = dict(coordinator.data)
+    del published[SECOND]
+    coordinator.async_set_updated_data(published)
+    await hass.async_block_till_done()
+
+    assert coordinator.tanks_without_readings() == [SECOND]
+    assert coordinator.tanks_without_readings(FIRST) == []
+
+    with pytest.raises(HomeAssistantError) as raised:
+        await coordinator.async_set_consumption(1000.0)
+
+    assert raised.value.translation_key == "tanks_without_readings"
+    assert tracker_of(coordinator, FIRST).total_litres == 0.0

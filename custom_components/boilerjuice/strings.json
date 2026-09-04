@@ -8,6 +8,11 @@
           "email": "Email",
           "password": "Password",
           "kwh_per_litre": "Energy content (kWh per litre)"
+        },
+        "data_description": {
+          "email": "The email address you sign in to boilerjuice.com with.",
+          "password": "Your BoilerJuice password. It is stored in Home Assistant and sent only to boilerjuice.com over HTTPS.",
+          "kwh_per_litre": "Energy in a litre of your oil, used for the energy and cost-per-kWh sensors. Kerosene is about 10.35 kWh per litre; gas oil is about 10.7. Between 0.1 and 100."
         }
       },
       "reauth_confirm": {
@@ -15,6 +20,9 @@
         "description": "BoilerJuice is no longer accepting the stored password for {email}.",
         "data": {
           "password": "Password"
+        },
+        "data_description": {
+          "password": "The password that works on boilerjuice.com now."
         }
       },
       "reconfigure": {
@@ -24,6 +32,11 @@
           "password": "New password",
           "kwh_per_litre": "Energy content (kWh per litre)",
           "tanks": "Tanks to track"
+        },
+        "data_description": {
+          "password": "Leave blank to keep the stored password.",
+          "kwh_per_litre": "Energy in a litre of your oil, used for the energy and cost-per-kWh sensors. Kerosene is about 10.35 kWh per litre; gas oil is about 10.7. Between 0.1 and 100.",
+          "tanks": "Tanks to keep in Home Assistant. Leave every tank selected to track the whole account, including tanks added later. A tank you clear here has its device removed but keeps its consumption history."
         }
       }
     },
@@ -129,23 +142,29 @@
     "no_accounts_loaded": {
       "message": "No BoilerJuice accounts are currently loaded."
     },
-    "target_required": {
-      "message": "Several BoilerJuice accounts are configured, so this action needs a target. Pick a BoilerJuice device, entity, area or label."
-    },
-    "unknown_entry": {
-      "message": "No BoilerJuice integration is loaded for entry ID {entry_id}."
-    },
     "no_boilerjuice_target": {
       "message": "The target of this action does not include any BoilerJuice tank."
     },
     "no_reading_yet": {
       "message": "That BoilerJuice tank has no reading yet, so there is nothing to set the consumption against. Wait for a successful update and try again."
     },
+    "save_failed": {
+      "message": "The change could not be saved, so nothing was recorded. Check the Home Assistant log for the storage error and try again."
+    },
+    "tanks_without_readings": {
+      "message": "Nothing was changed. The consumption is rebased on each tank's last reading, and there is none yet for: {tanks}. Wait for a successful update and try again."
+    },
+    "target_required": {
+      "message": "Several BoilerJuice accounts are configured, so this action needs a target. Pick a BoilerJuice device, entity, area or label."
+    },
     "unknown_device": {
       "message": "There is no device with ID {device_id}."
     },
     "unknown_entity": {
       "message": "There is no entity with ID {entity_id}."
+    },
+    "unknown_entry": {
+      "message": "No BoilerJuice integration is loaded for entry ID {entry_id}."
     }
   }
 }

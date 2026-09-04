@@ -359,3 +359,52 @@ def test_a_status_line_mentioning_tanks_is_not_an_empty_account(
 )
 def test_a_complete_empty_account_message_is_accepted(message: str) -> None:
     assert parse_tank_ids(f"<html><body><p>{message}</p></body></html>") == []
+
+
+@pytest.mark.parametrize(
+    "status_line",
+    [
+        pytest.param(
+            "<strong>No tanks</strong> need a delivery today", id="strong-prefix"
+        ),
+        pytest.param(
+            "<span>No tanks</span> require <em>attention</em>", id="span-and-em"
+        ),
+        pytest.param(
+            "Good news: <b>no tanks</b> need topping up", id="bold-mid-sentence"
+        ),
+        pytest.param(
+            'No <a href="/uk/help/levels">tanks</a> are low', id="linked-word"
+        ),
+    ],
+)
+def test_inline_markup_does_not_split_a_status_line_into_an_empty_state(
+    status_line: str,
+) -> None:
+    """Half a sentence is not a statement about the account.
+
+    Matching text nodes one at a time offered "No tanks" on its own the
+    moment two words of the sentence were wrapped in <strong>, which is the
+    same false empty account by a different route. The block element holding
+    the sentence is what has to match.
+    """
+    html = (
+        "<html><body><h1>Your tanks</h1>"
+        '<div class="card" data-tank="123456">Garden Tank</div>'
+        f"<footer><p>{status_line}</p></footer></body></html>"
+    )
+
+    with pytest.raises(BoilerJuiceParseError):
+        parse_tank_ids(html)
+
+
+def test_an_empty_state_carrying_inline_markup_is_still_recognised() -> None:
+    """Emphasis inside the message must not stop it being read."""
+    html = (
+        "<html><body><h1>Your tanks</h1>"
+        "<div class='empty'><p>You have <strong>no tanks</strong> yet.</p>"
+        '<a href="/uk/users/tanks/new">Add your first tank</a></div>'
+        "</body></html>"
+    )
+
+    assert parse_tank_ids(html) == []

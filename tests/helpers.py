@@ -109,6 +109,18 @@ async def setup_account(
     return entry
 
 
+async def reconfigure(hass, entry, **changes) -> None:
+    """Change an entry the way the reconfigure flow does, and reload it.
+
+    async_update_reload_and_abort updates the entry and then schedules the
+    reload itself. The integration registers no update listener, so a test
+    that only updates the entry changes nothing the coordinator can see.
+    """
+    hass.config_entries.async_update_entry(entry, **changes)
+    hass.config_entries.async_schedule_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
 def coordinator_of(entry) -> BoilerJuiceDataUpdateCoordinator:  # noqa: F821
     """Return a loaded entry's coordinator."""
     return entry.runtime_data.coordinator

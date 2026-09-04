@@ -5,8 +5,10 @@
 [![License](https://img.shields.io/github/license/willbeeching/boilerjuice)](LICENSE)
 [![HACS](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz/docs/faq/custom_repositories)
 
-Monitors BoilerJuice heating oil tanks in Home Assistant: level, volume,
-consumption, energy content and cost.
+Monitors heating oil tanks registered with
+[BoilerJuice](https://www.boilerjuice.com/), the UK domestic heating oil
+supplier, and reports level, volume, consumption, energy content and cost in
+Home Assistant.
 
 ## How it works, and what that costs you
 

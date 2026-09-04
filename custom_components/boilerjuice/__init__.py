@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Container, Iterable
+from collections.abc import Container, Coroutine, Iterable
 from typing import Any
 
 import voluptuous as vol
@@ -229,7 +229,7 @@ def _resolve_targets(
     entry_ids |= _entry_ids_for_labels(hass, targets["label_id"], coordinators)
 
     if not entry_ids:
-        raise HomeAssistantError(
+        raise ServiceValidationError(
             translation_domain=DOMAIN, translation_key="no_boilerjuice_target"
         )
 
@@ -257,7 +257,7 @@ def _resolve_targets(
         if not tanks:
             # The target reached this account through a device or entity we
             # could not tie back to a tank. Refuse rather than widen.
-            raise HomeAssistantError(
+            raise ServiceValidationError(
                 translation_domain=DOMAIN, translation_key="no_boilerjuice_target"
             )
         resolved.extend((coordinator, tank_id) for tank_id in tanks)
@@ -320,6 +320,29 @@ def _devices_with_labels(hass: HomeAssistant, label_ids: Iterable[str]) -> set[s
     return found
 
 
+async def _stored_history_change(action: Coroutine[Any, Any, None]) -> None:
+    """Await a change to the stored history, translating any failure.
+
+    Both actions rewrite consumption history and then write it to disk. A
+    failed write raises OSError from Home Assistant's Store, which reaches
+    the user as a traceback with a filename in it rather than a sentence.
+    Anything that already carries a translation key is passed through: those
+    are the caller's own mistakes, already phrased for them.
+    """
+    try:
+        await action
+    except HomeAssistantError as err:
+        if err.translation_key:
+            raise
+        raise HomeAssistantError(
+            translation_domain=DOMAIN, translation_key="save_failed"
+        ) from err
+    except Exception as err:
+        raise HomeAssistantError(
+            translation_domain=DOMAIN, translation_key="save_failed"
+        ) from err
+
+
 @callback
 def async_setup_services(hass: HomeAssistant) -> None:
     """Set up the BoilerJuice services."""
@@ -329,7 +352,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
     async def async_handle_reset_consumption(call: ServiceCall) -> None:
         """Handle the service call to reset consumption."""
         for coordinator, tank_id in _resolve_targets(hass, call):
-            await coordinator.async_reset_consumption(tank_id)
+            await _stored_history_change(coordinator.async_reset_consumption(tank_id))
             await coordinator.async_request_refresh()
 
     hass.services.async_register(
@@ -341,20 +364,32 @@ def async_setup_services(hass: HomeAssistant) -> None:
 
     async def async_handle_set_consumption(call: ServiceCall) -> None:
         """Handle the service call to set consumption values."""
-        for coordinator, tank_id in _resolve_targets(hass, call):
-            # Rebasing the references needs a reading to rebase onto. Doing
-            # nothing and reporting success left the user believing their
-            # totals had been set.
+        targets = _resolve_targets(hass, call)
+
+        # Rebasing the references needs a reading to rebase onto. Every
+        # target is checked before any of them is written, so a call naming
+        # a whole account with one tank offline changes nothing at all: the
+        # offline tank would take the new total without a new reference and
+        # book the gap as consumption when it came back.
+        missing: list[str] = []
+        for coordinator, tank_id in targets:
             if not coordinator.data:
                 raise HomeAssistantError(
                     translation_domain=DOMAIN, translation_key="no_reading_yet"
                 )
-            if tank_id is not None and coordinator.reading(tank_id) is None:
-                raise HomeAssistantError(
-                    translation_domain=DOMAIN, translation_key="no_reading_yet"
+            missing.extend(coordinator.tanks_without_readings(tank_id))
+        if missing:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="tanks_without_readings",
+                translation_placeholders={"tanks": ", ".join(sorted(set(missing)))},
+            )
+
+        for coordinator, tank_id in targets:
+            await _stored_history_change(
+                coordinator.async_set_consumption(
+                    call.data["liters"], call.data.get("daily"), tank_id
                 )
-            await coordinator.async_set_consumption(
-                call.data["liters"], call.data.get("daily"), tank_id
             )
 
     hass.services.async_register(
@@ -432,18 +467,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: BoilerJuiceConfigEntry) 
     await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = BoilerJuiceRuntimeData(coordinator=coordinator)
-    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+
+    # No update listener. Reauthentication and reconfiguration both finish
+    # with async_update_reload_and_abort, which schedules the reload itself.
+    # Registering a listener on top of that reloads the entry twice, and
+    # Home Assistant 2026.9 logs it as a mistake that becomes an error in
+    # 2026.12. Nothing else in this integration writes to the entry.
 
     async_setup_services(hass)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
-
-
-async def async_reload_entry(
-    hass: HomeAssistant, entry: BoilerJuiceConfigEntry
-) -> None:
-    """Reload after the user changes the credentials or the options."""
-    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(

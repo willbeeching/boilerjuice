@@ -52,6 +52,9 @@ rules:
       reconfigure steps and every error branch. config_flow.py is at 100%.
   config-flow:
     status: done
+    comment: >-
+      Every field in the user, reauth and reconfigure steps carries a
+      data_description, including the accepted range for the energy content.
   dependency-transparency:
     status: done
     comment: >-
@@ -68,6 +71,7 @@ rules:
       numeric-state and state conditions read these sensors directly.
   docs-high-level-description:
     status: done
+    comment: The README opens by naming and linking boilerjuice.com.
   docs-installation-instructions:
     status: done
   docs-removal-instructions:
@@ -106,7 +110,12 @@ rules:
   # --- Silver ---
   action-exceptions:
     status: done
-    comment: Actions raise translated HomeAssistantError subclasses.
+    comment: >-
+      A mistake in the call - a target that names no BoilerJuice tank, an
+      unknown device, entity or entry, an ambiguous call with no target -
+      raises ServiceValidationError. A failure to carry the change out - no
+      reading to rebase on, a storage write that fails - raises
+      HomeAssistantError. Both carry translation keys.
   config-entry-unloading:
     status: done
   docs-configuration-parameters:
@@ -160,7 +169,11 @@ rules:
   docs-data-update:
     status: done
   docs-examples:
-    status: done
+    status: todo
+    comment: >-
+      The README has working automation examples, but since August 2026 the
+      rule asks for a reusable blueprint published to the Blueprint Exchange
+      and linked from the documentation. That has not been done.
   docs-known-limitations:
     status: done
     comment: >-
@@ -202,9 +215,11 @@ rules:
     status: done
     comment: >-
       Every error raised at a user is a HomeAssistantError subclass with a
-      translation_key, including the ServiceValidationError raised for an
-      action target that names a device, entity or config entry this
-      integration does not own.
+      translation_key: the ServiceValidationError for a target that names a
+      device, entity or config entry this integration does not own or that
+      resolves to no tank, and the HomeAssistantError for a tank with no
+      reading to rebase on or a storage write that failed. A test asserts
+      the key exists in strings.json.
   icon-translations:
     status: done
     comment: icons.json, keyed by translation key. A test keeps the two in step.
@@ -220,10 +235,11 @@ rules:
     comment: >-
       A tank the user excludes is removed at once; a tank BoilerJuice stops
       listing is removed after three consecutive authoritative listings
-      agree. Either way it is retired rather than erased: the device goes,
-      the history stays, and it resumes if the tank returns. A listing page
-      we do not recognise is refused outright rather than read as "no
-      tanks".
+      agree, via async_remove_device. Either way it is retired rather than
+      erased: the device goes, the history stays, and it resumes if the tank
+      returns. A listing page we do not recognise is refused outright rather
+      than read as "no tanks", and an empty-account message has to be the
+      whole of a block element rather than a phrase found inside one.
 
   # --- Platinum ---
   async-dependency:

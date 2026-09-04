@@ -325,6 +325,50 @@ async def test_reconfigure_refuses_an_impossible_energy_content(
     assert CONF_KWH_PER_LITRE not in entry.options
 
 
+@pytest.mark.parametrize("flow", ["reauth", "reconfigure"])
+async def test_a_successful_flow_reloads_the_entry_exactly_once(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, flow: str
+) -> None:
+    """One reload, from async_update_reload_and_abort and nowhere else.
+
+    The integration used to register an update listener as well, so every
+    reauthentication and reconfiguration reloaded the entry twice. Home
+    Assistant 2026.9 logs that combination and 2026.12 rejects it.
+    """
+    entry = await setup_account(hass, aioclient_mock, tank_id=None)
+    mock_account(aioclient_mock)
+
+    if flow == "reauth":
+        result = await entry.start_reauth_flow(hass)
+        # A password that really differs: an unchanged entry never woke the
+        # listener, so it hid the second reload.
+        user_input: dict[str, object] = {CONF_PASSWORD: "a-different-password"}
+    else:
+        result = await entry.start_reconfigure_flow(hass)
+        user_input = {CONF_KWH_PER_LITRE: 10.35, CONF_TANKS: []}
+
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_reload",
+        wraps=hass.config_entries.async_reload,
+    ) as reload:
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    assert reload.call_count == 1
+
+
+async def test_no_update_listener_is_registered(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """The reload belongs to the config-flow helpers, not to a listener."""
+    entry = await setup_account(hass, aioclient_mock, tank_id=None)
+
+    assert entry.update_listeners == []
+
+
 # --- reconfiguration ------------------------------------------------------
 
 

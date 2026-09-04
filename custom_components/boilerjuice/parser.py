@@ -56,6 +56,37 @@ _NO_TANKS_RE = re.compile(
 # Punctuation and decoration a real page wraps such a message in.
 _TRIM = " \t\r\n.!:\u2014-\u2022*"
 
+# The elements a sentence is allowed to be assembled from. Matching against
+# individual text nodes instead splits a sentence wherever it carries inline
+# markup: <p><strong>No tanks</strong> need a delivery today</p> offers the
+# fragment "No tanks" on its own, which is a match. Matching against block
+# elements reassembles the sentence first. Inline tags are deliberately
+# absent from this list, and so is the bare text of the page.
+_BLOCK_TAGS = (
+    "article",
+    "aside",
+    "blockquote",
+    "body",
+    "dd",
+    "div",
+    "dt",
+    "figcaption",
+    "footer",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "li",
+    "main",
+    "p",
+    "section",
+    "td",
+    "th",
+)
+
 _SHAPES = ("cuboid", "horizontal_cylinder", "vertical_cylinder")
 
 
@@ -177,14 +208,24 @@ def parse_price(html: str) -> float | None:
 def looks_like_empty_tank_list(soup: BeautifulSoup) -> bool:
     """Return True when the page states that the account has no tanks.
 
-    Matched against each piece of text on the page in full, not searched for
-    within the page as a whole. Searching accepted "No tanks need a delivery
+    Each block element on the page has to say so on its own and say nothing
+    else. Searching the page as a whole accepted "No tanks need a delivery
     today" - an ordinary status line on a populated page - as proof that the
     account was empty, and three such polls retire the tanks it was
-    describing.
+    describing. Matching individual text nodes accepted the same sentence
+    the moment two words of it were wrapped in <strong>.
+
+    The document as a whole is a candidate too, which covers a page whose
+    entire content is the message and nothing else.
+
+    A block that holds the message plus anything else fails to match, and a
+    tanks page nobody can read is a parse failure rather than an empty
+    account, so the cost of being wrong here is a repair issue and not a
+    deleted device.
     """
-    for text in soup.stripped_strings:
-        message = " ".join(text.split()).strip(_TRIM)
+    candidates = [soup, *soup.find_all(_BLOCK_TAGS)]
+    for element in candidates:
+        message = " ".join(element.get_text(" ", strip=True).split()).strip(_TRIM)
         if message and _NO_TANKS_RE.fullmatch(message):
             return True
     return False

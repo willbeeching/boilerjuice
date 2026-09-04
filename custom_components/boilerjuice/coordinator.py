@@ -17,7 +17,7 @@ from typing import Any
 import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
@@ -200,6 +200,21 @@ class BoilerJuiceDataUpdateCoordinator(
         """Return the published state for `tank_id`, if there is one."""
         return (self.data or {}).get(tank_id)
 
+    def tanks_without_readings(self, tank_id: str | None = None) -> list[str]:
+        """Return the targeted tanks that have nothing to rebase onto.
+
+        `tank_id` of None means the whole account, which is how an entry-wide
+        action arrives. Setting the consumption on a tank with no current
+        reading writes the new total but leaves the reference where it was,
+        so the tank books the gap as consumption the moment it comes back.
+        """
+        published = self.data or {}
+        return [
+            tracker.tank_id
+            for tracker in self._selected_trackers(tank_id)
+            if published.get(tracker.tank_id) is None
+        ]
+
     @callback
     def async_add_new_tank_listener(
         self, listener: Callable[[list[str]], None]
@@ -324,15 +339,29 @@ class BoilerJuiceDataUpdateCoordinator(
         """
         async with self._lock:
             published = dict(self.data or {})
-            for tracker in self._selected_trackers(tank_id):
+            trackers = self._selected_trackers(tank_id)
+            missing = [
+                tracker.tank_id
+                for tracker in trackers
+                if published.get(tracker.tank_id) is None
+            ]
+            if missing:
+                # Checked again here, under the lock, so a reading that
+                # disappeared between the caller's check and this one cannot
+                # leave half the account rebased and half of it not.
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="tanks_without_readings",
+                    translation_placeholders={"tanks": ", ".join(sorted(missing))},
+                )
+            for tracker in trackers:
                 tracker.set_consumption(total_litres, daily_litres, self._kwh_per_litre)
-                state = published.get(tracker.tank_id)
-                if state is not None:
-                    tracker.rebase(state)
-                    tracker.state.last_update = dt_util.now()
-                    updated = tracker.decorate(dict(state), self._kwh_per_litre)
-                    updated["last_level_change"] = tracker.last_level_change
-                    published[tracker.tank_id] = updated
+                state = published[tracker.tank_id]
+                tracker.rebase(state)
+                tracker.state.last_update = dt_util.now()
+                updated = tracker.decorate(dict(state), self._kwh_per_litre)
+                updated["last_level_change"] = tracker.last_level_change
+                published[tracker.tank_id] = updated
             await self._async_persist()
             if published:
                 self.async_set_updated_data(published)
