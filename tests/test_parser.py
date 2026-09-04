@@ -77,7 +77,7 @@ def test_parses_the_renamed_name_and_oil_type_fields() -> None:
         '<div id="usable-oil"><div class="oil-level" data-percentage="50"></div></div>'
         '<input id="name" name="name" value="Garden Tank">'
         '<select id="oil_type_id"><option>Gas Oil</option>'
-        '<option selected>Kerosene</option></select>'
+        "<option selected>Kerosene</option></select>"
     )
     reading = parse_tank_page(html, "123456")
 
@@ -632,9 +632,7 @@ def test_json_listing_an_object_without_tanks_is_a_parse_error() -> None:
 
 def test_json_sign_in_error_is_an_auth_error() -> None:
     with pytest.raises(BoilerJuiceAuthError):
-        parse_tank_ids(
-            '{"error":"You need to sign in or sign up before continuing."}'
-        )
+        parse_tank_ids('{"error":"You need to sign in or sign up before continuing."}')
 
 
 def test_json_tank_parses_a_flat_object() -> None:
@@ -740,3 +738,98 @@ def test_looks_like_json_sign_in() -> None:
     )
     assert parser.looks_like_json_sign_in("<html></html>") is False
     assert parser.looks_like_json_sign_in("{not-json") is False
+    assert parser.looks_like_json_sign_in("[1, 2]") is False
+
+
+def test_describe_json_shape_of_a_list_and_a_scalar() -> None:
+    assert parser.describe_json_shape([{"id": 1}, "skip", {"name": "x"}]) == {
+        "is_json": True,
+        "type": "list",
+        "length": 3,
+        "item_keys": ["id", "name"],
+    }
+    assert parser.describe_json_shape(7) == {"is_json": True, "type": "number"}
+    assert parser.describe_json_shape(None) == {"is_json": True, "type": "null"}
+    assert parser.describe_json_shape(True) == {"is_json": True, "type": "boolean"}
+
+
+def test_json_tank_sign_in_error_is_an_auth_error() -> None:
+    with pytest.raises(BoilerJuiceAuthError):
+        parse_tank_page(
+            '{"error":"You need to sign in or sign up before continuing."}',
+            "123456",
+        )
+
+
+def test_json_tank_refuses_a_non_numeric_id() -> None:
+    with pytest.raises(BoilerJuiceParseError):
+        parse_tank_page('{"id": 1, "percentage": 50}', "../admin")
+
+
+def test_json_tank_unrecognised_payload_raises() -> None:
+    with pytest.raises(BoilerJuiceParseError) as caught:
+        parse_tank_page("[1, 2, 3]", "123456")
+
+    assert "page shape" in str(caught.value)
+
+
+def test_json_tank_list_without_the_requested_id_raises() -> None:
+    with pytest.raises(BoilerJuiceParseError):
+        parse_tank_page(
+            '[{"id": 111, "percentage": 10}, {"id": 222, "percentage": 20}]',
+            "123456",
+        )
+
+
+def test_json_tank_reads_oil_type_object_and_numeric_model_id() -> None:
+    reading = parse_tank_page(
+        json.dumps(
+            {
+                "id": 123456,
+                "percentage": 50,
+                "oil_type": {"name": "Kerosene"},
+                "model_id": 42,
+                "shape": "not-a-shape",
+            }
+        ),
+        "123456",
+    )
+
+    assert reading.oil_type == "Kerosene"
+    assert reading.model_id == "42"
+    assert reading.shape is None
+
+
+def test_json_listing_skips_objects_without_an_id() -> None:
+    assert parse_tank_ids('[{"name": "orphan"}, {"id": 123456}]') == ["123456"]
+
+
+def test_json_listing_accepts_a_user_tanks_wrapper() -> None:
+    assert parse_tank_ids('{"user_tanks": [{"id": 7}]}') == ["7"]
+
+
+def test_json_with_a_bom_still_parses() -> None:
+    assert parse_tank_ids('\ufeff{"tanks": []}') == []
+
+
+def test_an_empty_account_page_is_not_a_javascript_shell() -> None:
+    assert (
+        parser.looks_like_javascript_shell(load_fixture("tanks_list_empty.html"))
+        is False
+    )
+    assert parser.looks_like_javascript_shell('[{"id": 1}]') is False
+
+
+def test_json_reads_a_reading_two_objects_down() -> None:
+    reading = parse_tank_page(
+        json.dumps(
+            {
+                "id": 123456,
+                "monitor": {"latest_reading": {"percentage": 33, "litres": 800}},
+            }
+        ),
+        "123456",
+    )
+
+    assert reading.level_percentage == 33
+    assert reading.volume_litres == 800

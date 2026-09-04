@@ -372,9 +372,7 @@ class BoilerJuiceClient:
 
     async def async_list_tank_ids(self) -> list[str]:
         """Return every tank id on the account, in page order."""
-        body = await self._async_get_tank_document(
-            TANKS_URL, "BoilerJuice tanks page"
-        )
+        body = await self._async_get_tank_document(TANKS_URL, "BoilerJuice tanks page")
         return parse_tank_ids(body)
 
     async def async_fetch_tank(self, tank_id: str | None = None) -> TankReading:
