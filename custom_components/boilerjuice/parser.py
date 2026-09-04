@@ -354,10 +354,37 @@ _JSON_MANUFACTURER_KEYS = ("manufacturer", "Brand", "brand")
 _JSON_MODEL_ID_KEYS = ("model_id", "tank_model_id")
 _JSON_LIST_KEYS = ("tanks", "user_tanks", "data", "results")
 
+# Field names we already understand. The shape reporter may name these
+# and nothing else: an unexpected payload can use a tank id or an email
+# address as a key, and those must not reach a log or a diagnostic.
+_RECOGNISED_JSON_KEYS = frozenset(
+    (
+        *_JSON_ID_KEYS,
+        *_JSON_LEVEL_KEYS,
+        *_JSON_VOLUME_KEYS,
+        *_JSON_CAPACITY_KEYS,
+        *_JSON_HEIGHT_KEYS,
+        *_JSON_NAME_KEYS,
+        *_JSON_SHAPE_KEYS,
+        *_JSON_OIL_TYPE_KEYS,
+        *_JSON_MODEL_KEYS,
+        *_JSON_MANUFACTURER_KEYS,
+        *_JSON_MODEL_ID_KEYS,
+        *_JSON_LIST_KEYS,
+        "error",
+    )
+)
+_MAX_SHAPE_KEYS = 32
+
+
+def _strip_json_prefix(body: str) -> str:
+    """Remove a UTF-8 BOM and leading whitespace so JSON parsers agree."""
+    return body.lstrip("\ufeff \t\r\n")
+
 
 def looks_like_json(body: str) -> bool:
     """Return True when `body` is more likely JSON than HTML."""
-    stripped = body.lstrip("\ufeff \t\r\n")
+    stripped = _strip_json_prefix(body)
     return stripped.startswith("{") or stripped.startswith("[")
 
 
@@ -385,7 +412,7 @@ def looks_like_javascript_shell(html: str) -> bool:
 def _load_json(body: str) -> Any:
     """Parse `body` as JSON, or raise a parse error that names no content."""
     try:
-        return json.loads(body.lstrip("\ufeff \t\r\n"))
+        return json.loads(_strip_json_prefix(body))
     except json.JSONDecodeError:
         raise BoilerJuiceParseError(
             "The BoilerJuice response looked like JSON but did not parse"
@@ -409,10 +436,18 @@ def _json_type(value: Any) -> str:
     return "other"
 
 
-def describe_json_shape(data: Any) -> dict[str, Any]:
-    """Describe a JSON payload without reproducing any of its values.
+def _recognised_key_names(keys: Any) -> list[str]:
+    """Return the allowlisted names in `keys`, sorted and capped."""
+    names = sorted({str(key) for key in keys if str(key) in _RECOGNISED_JSON_KEYS})
+    return names[:_MAX_SHAPE_KEYS]
 
-    Safe to log and to paste into an issue: keys and types only.
+
+def describe_json_shape(data: Any) -> dict[str, Any]:
+    """Describe a JSON payload without reproducing any of its content.
+
+    Safe to log and to paste into an issue: counts, JSON types, and a
+    capped allowlist of field names we already recognise. Arbitrary
+    keys are not copied; they can be tank ids or email addresses.
     """
     if isinstance(data, list):
         keys: set[str] = set()
@@ -423,14 +458,22 @@ def describe_json_shape(data: Any) -> dict[str, Any]:
             "is_json": True,
             "type": "list",
             "length": len(data),
-            "item_keys": sorted(keys),
+            "item_key_count": len(keys),
+            "recognised_item_keys": _recognised_key_names(keys),
         }
     if isinstance(data, dict):
+        recognised = _recognised_key_names(data)
+        nested: dict[str, str] = {}
+        for key, value in data.items():
+            name = str(key)
+            if name in recognised:
+                nested[name] = _json_type(value)
         return {
             "is_json": True,
             "type": "object",
-            "keys": sorted(str(key) for key in data),
-            "nested": {str(key): _json_type(value) for key, value in data.items()},
+            "key_count": len(data),
+            "recognised_keys": recognised,
+            "nested": nested,
         }
     return {"is_json": True, "type": _json_type(data)}
 
@@ -440,7 +483,7 @@ def looks_like_json_sign_in(body: str) -> bool:
     if not looks_like_json(body):
         return False
     try:
-        data = json.loads(body)
+        data = json.loads(_strip_json_prefix(body))
     except json.JSONDecodeError:
         return False
     return _json_says_sign_in(data)
@@ -563,6 +606,14 @@ def _parse_tank_ids_json(body: str) -> list[str]:
         tank_id = validate_tank_id(_first_raw([obj], _JSON_ID_KEYS))
         if tank_id is not None and tank_id not in tank_ids:
             tank_ids.append(tank_id)
+    if objects and not tank_ids:
+        # A non-empty list of objects we cannot identify is unreadable,
+        # not empty. Returning [] here would retire every tank device.
+        raise BoilerJuiceParseError(
+            "The BoilerJuice tanks JSON listed objects but none had a "
+            "readable tank id; refusing to treat it as proof that the "
+            f"tanks are gone (page shape: {describe_json_shape(data)})"
+        )
     return tank_ids
 
 
@@ -584,20 +635,24 @@ def _parse_tank_json(body: str, tank_id: str) -> TankReading:
             "The BoilerJuice tank JSON was not a tank object "
             f"(page shape: {describe_json_shape(data)})"
         )
-    if len(objects) == 1:
+    matches = [
+        obj
+        for obj in objects
+        if validate_tank_id(_first_raw([obj], _JSON_ID_KEYS)) == canonical
+    ]
+    if matches:
+        chosen = matches[0]
+    elif len(objects) == 1 and (
+        validate_tank_id(_first_raw([objects[0]], _JSON_ID_KEYS)) is None
+    ):
+        # A singleton document with no readable id is the page we asked
+        # for. A readable id that names a different tank is not.
         chosen = objects[0]
     else:
-        matches = [
-            obj
-            for obj in objects
-            if validate_tank_id(_first_raw([obj], _JSON_ID_KEYS)) == canonical
-        ]
-        if not matches:
-            raise BoilerJuiceParseError(
-                "The BoilerJuice tank JSON listed tanks but not the one "
-                f"requested (page shape: {describe_json_shape(data)})"
-            )
-        chosen = matches[0]
+        raise BoilerJuiceParseError(
+            "The BoilerJuice tank JSON listed tanks but not the one "
+            f"requested (page shape: {describe_json_shape(data)})"
+        )
 
     fields = _collect_dicts(chosen)
     reading = TankReading(

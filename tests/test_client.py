@@ -128,37 +128,61 @@ async def test_http_statuses_map_onto_distinct_errors(
 
 
 async def test_a_chunked_body_is_read_in_full() -> None:
-    """content.read(n) on the live site returned only the HTML head.
+    """A single content.read(n) on the live site returned only the head.
 
-    That truncated page had scripts and no tank links, so we reported a
-    JavaScript rewrite. response.read() waits for the decoded payload.
+    The first decoded chunk of a chunked, gzipped page is the HTML
+    ``<head>``. Reading until the stream ends collects the tanks.
     """
+    head = b'<!DOCTYPE html><html><head><script src="/app.js"></script></head>'
+    rest = b'<body><a href="/uk/users/tanks/123456">Tank</a></body></html>'
 
     class FakeStream:
-        def __init__(self, partial: bytes) -> None:
-            self.partial = partial
+        def __init__(self) -> None:
+            self._chunks = [head, rest]
 
         async def read(self, _n: int = -1) -> bytes:
-            return self.partial
+            if not self._chunks:
+                return b""
+            return self._chunks.pop(0)
 
     class FakeResponse:
         charset = "utf-8"
 
         def __init__(self) -> None:
-            self._full = (
-                b"<!DOCTYPE html><html><head>"
-                b'<script src="/app.js"></script></head>'
-                b'<body><a href="/uk/users/tanks/123456">Tank</a></body></html>'
-            )
-            self.content = FakeStream(self._full.split(b"</head>")[0])
-
-        async def read(self) -> bytes:
-            return self._full
+            self.content = FakeStream()
 
     text = await BoilerJuiceClient._read_text(FakeResponse(), "tank page")
 
     assert "tanks/123456" in text
     assert text.count("<script") == 1
+
+
+async def test_an_oversized_response_stops_being_read() -> None:
+    """The size cap is enforced while reading, not after the body arrives."""
+    chunk = b"x" * (512 * 1024)
+
+    class CountingStream:
+        def __init__(self) -> None:
+            self.reads = 0
+
+        async def read(self, _n: int = -1) -> bytes:
+            self.reads += 1
+            return chunk
+
+    class FakeResponse:
+        charset = "utf-8"
+
+        def __init__(self) -> None:
+            self.content = CountingStream()
+
+    response = FakeResponse()
+    with pytest.raises(BoilerJuiceParseError):
+        await BoilerJuiceClient._read_text(response, "tank page")
+
+    # Eight 512 KiB chunks are exactly the limit and are kept. The ninth
+    # exceeds it, so we stop without asking for a tenth.
+    assert response.content.reads == 9
+    assert MAX_RESPONSE_BYTES // len(chunk) == 8
 
 
 async def test_an_oversized_response_is_refused(

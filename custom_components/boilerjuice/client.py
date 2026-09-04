@@ -51,6 +51,7 @@ REQUEST_TIMEOUT = aiohttp.ClientTimeout(
 # A tank page is a few hundred kilobytes. Anything vastly larger is not a
 # page we can use, and reading it would just burn memory.
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+READ_CHUNK_BYTES = 64 * 1024
 
 SessionFactory = Callable[[aiohttp.ClientTimeout], aiohttp.ClientSession]
 
@@ -146,20 +147,30 @@ class BoilerJuiceClient:
 
     @staticmethod
     async def _read_text(response: aiohttp.ClientResponse, description: str) -> str:
-        """Read a bounded amount of body text from `response`.
+        """Read a bounded amount of decoded body text from `response`.
 
-        Must use ``response.read()``, not ``response.content.read(n)``.
-        On the live site the body is chunked and gzipped; a sized stream
-        read returned only the ``<head>`` — scripts, no forms, no tank
-        links — which we then described as a JavaScript app rewrite.
-        ``read()`` waits for the decoded payload, then we enforce the cap.
+        The body is consumed in chunks from the decoded stream. A single
+        ``content.read(n)`` on the live site returned only the HTML
+        ``<head>`` — the first chunk of a chunked, gzipped payload —
+        which we then described as a JavaScript app rewrite. Looping
+        until the stream ends collects the full page. Stopping as soon
+        as the accumulated size exceeds the cap means a runaway
+        response is never fully materialised.
         """
-        raw = await response.read()
-        if len(raw) > MAX_RESPONSE_BYTES:
-            raise BoilerJuiceParseError(
-                f"The {description} was larger than {MAX_RESPONSE_BYTES} bytes"
-            )
-        return raw.decode(response.charset or "utf-8", errors="replace")
+        chunks: list[bytes] = []
+        total = 0
+        reader = response.content
+        while True:
+            chunk = await reader.read(READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_RESPONSE_BYTES:
+                raise BoilerJuiceParseError(
+                    f"The {description} was larger than {MAX_RESPONSE_BYTES} bytes"
+                )
+            chunks.append(chunk)
+        return b"".join(chunks).decode(response.charset or "utf-8", errors="replace")
 
     async def _async_get(
         self,
