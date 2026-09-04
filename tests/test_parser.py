@@ -515,6 +515,39 @@ def test_the_shape_of_a_real_tanks_page_names_no_interstitial() -> None:
     assert shape["tank_links"] > 0
 
 
+APP_SHELL = """
+<html><head><script src="/_next/static/chunk.js"></script></head>
+<body><div id="__next"></div>
+<script id="__NEXT_DATA__" type="application/json">
+{"props":{"tank":{"id":"998877","litres":590,"owner":"will@together.agency"}}}
+</script></body></html>
+"""
+
+
+def test_a_client_rendered_shell_is_distinguishable_from_a_redesign() -> None:
+    """Zero anchors and a pile of scripts is an app, not a page.
+
+    BoilerJuice replaced its server-rendered account pages with a
+    JavaScript application. The markup arrives as a skeleton, so a
+    scraper reading anchors finds nothing and cannot say why.
+    """
+    shape = parser.describe_page_shape(APP_SHELL)
+
+    assert shape["links"] == 0
+    assert shape["scripts"] == 2
+    assert shape["json_scripts"] == 1
+    assert shape["state_containers"] == ["__NEXT_DATA__"]
+    assert shape["looks_like_interstitial"] == []
+
+
+def test_the_state_container_report_carries_no_page_content() -> None:
+    """Knowing the data is embedded must not mean reproducing it."""
+    serialised = json.dumps(parser.describe_page_shape(APP_SHELL))
+
+    for secret in ("998877", "will@together.agency", "590"):
+        assert secret not in serialised, f"the page shape leaked {secret!r}"
+
+
 def test_the_shape_carries_no_page_content() -> None:
     """Page HTML is never reproduced, at any level. Counts only.
 
@@ -545,11 +578,16 @@ def test_the_shape_carries_no_page_content() -> None:
         "links",
         "tank_links",
         "scripts",
+        "json_scripts",
+        "largest_inline_script_bytes",
+        "state_containers",
         "looks_like_interstitial",
     }
     for key, value in shape.items():
         if key == "looks_like_interstitial":
             assert set(value) <= set(parser._INTERSTITIAL_MARKERS)
+        elif key == "state_containers":
+            assert set(value) <= set(parser._STATE_CONTAINERS)
         else:
             assert isinstance(value, (int, bool))
 

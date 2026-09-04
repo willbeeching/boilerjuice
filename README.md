@@ -219,7 +219,8 @@ Other behaviour worth knowing:
   or a tank page arrives in a shape the parser does not recognise, the
   warning carries a summary of the page: its size, how many forms, links
   and tank links it holds, and whether it matches a known interstitial such
-  as a Cloudflare challenge or a maintenance notice. Page HTML is never
+  as a Cloudflare challenge or a maintenance notice, and whether it carries
+  the embedded state a client-rendered page ships. Page HTML is never
   logged, so the summary is counts and fixed words only, and is safe to
   paste into an issue.
 - **Diagnostics say where the history reaches.** `history_span` and

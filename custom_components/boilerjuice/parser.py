@@ -234,6 +234,20 @@ def looks_like_empty_tank_list(soup: BeautifulSoup) -> bool:
 # Vendor strings that identify an interstitial rather than the page asked
 # for. Matched case-insensitively against the document, and reported only
 # as which one matched: a fixed list of our own words, never page content.
+# Framework names for the blob of JSON a client-rendered page ships so the
+# browser can draw without a second request. Finding one says the data is
+# still in the response and can be read; finding none says it arrives over
+# a separate call. These are framework identifiers, never page content.
+_STATE_CONTAINERS = (
+    "__NEXT_DATA__",
+    "__NUXT__",
+    "__remixContext",
+    "__APOLLO_STATE__",
+    "__INITIAL_STATE__",
+    "__sveltekit",
+    "self.__next_f",
+)
+
 _INTERSTITIAL_MARKERS = {
     "cloudflare": ("cf-browser-verification", "cf-challenge", "just a moment"),
     "blocked": ("attention required", "access denied", "request blocked"),
@@ -263,6 +277,9 @@ def describe_page_shape(html: str) -> dict[str, Any]:
         if any(marker in lowered for marker in markers)
     )
 
+    scripts = soup.find_all("script")
+    inline = [len(script.string or "") for script in scripts]
+
     return {
         "bytes": len(html),
         "is_html": soup.find("html") is not None or soup.find("body") is not None,
@@ -270,7 +287,20 @@ def describe_page_shape(html: str) -> dict[str, Any]:
         "password_inputs": len(soup.find_all("input", {"type": "password"})),
         "links": len(soup.find_all("a")),
         "tank_links": len(soup.find_all("a", href=_TANK_LINK_RE)),
-        "scripts": len(soup.find_all("script")),
+        "scripts": len(scripts),
+        # A shell that draws itself has scripts and no anchors. Whether its
+        # data came with it decides whether there is anything here to read.
+        "json_scripts": len(
+            [
+                script
+                for script in scripts
+                if "json" in str(script.get("type", "")).lower()
+            ]
+        ),
+        "largest_inline_script_bytes": max(inline, default=0),
+        "state_containers": [
+            name for name in _STATE_CONTAINERS if name.lower() in lowered
+        ],
         "looks_like_interstitial": interstitial,
     }
 
