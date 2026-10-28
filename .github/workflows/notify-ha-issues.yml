@@ -15,8 +15,8 @@ permissions: {}
 jobs:
   notify:
     name: Forward to HA watcher
-    # Issue comments on pull requests are skipped. Opened pull requests are sent.
-    if: ${{ github.event_name == 'pull_request' || github.event_name == 'issues' || (github.event_name == 'issue_comment' && github.event.issue.pull_request == null) }}
+    # Issue comments on pull requests are skipped. Opened issues and pull requests always run.
+    if: ${{ github.event_name != 'issue_comment' || github.event.issue.pull_request == null }}
     runs-on: ubuntu-latest
     steps:
       - name: POST event to webhook
