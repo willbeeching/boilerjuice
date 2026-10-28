@@ -13,7 +13,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from .errors import BoilerJuiceAuthError, BoilerJuiceParseError
 from .models import TankReading
@@ -704,10 +704,10 @@ def _first_input_value(
 def _parse_level(soup: BeautifulSoup) -> float | None:
     """Return the oil level percentage shown on the page."""
     container = soup.find("div", {"id": "usable-oil"})
-    if container is None:
+    if not isinstance(container, Tag):
         return None
     oil_level = container.find("div", {"class": "oil-level"})
-    if oil_level is None:
+    if not isinstance(oil_level, Tag):
         return None
     return percentage(_attribute(oil_level, "data-percentage"))
 
@@ -740,7 +740,7 @@ def _parse_shape(soup: BeautifulSoup) -> str | None:
         )
         # `has_attr`, not `get`: a bare `checked` attribute parses as an empty
         # string, so `get` reported every shape as unselected.
-        if element is not None and element.has_attr("checked"):
+        if isinstance(element, Tag) and element.has_attr("checked"):
             return shape.replace("_", " ").title()
     return None
 
@@ -750,7 +750,7 @@ def _parse_oil_type(soup: BeautifulSoup) -> str | None:
     select = soup.find("select", {"id": "tank_oil_type_id"}) or soup.find(
         "select", {"id": "oil_type_id"}
     )
-    if select is None:
+    if not isinstance(select, Tag):
         return None
     selected = select.find("option", selected=True)
     return selected.text if selected else None
@@ -782,6 +782,8 @@ def _parse_model(soup: BeautifulSoup) -> tuple[str | None, str | None, str | Non
         return None, None, None
 
     for script in soup.find_all("script"):
+        if not isinstance(script, Tag):
+            continue
         if not (script.string and "var jsonData = " in script.string):
             continue
 
