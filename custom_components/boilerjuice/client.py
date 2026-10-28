@@ -16,7 +16,7 @@ from collections.abc import Callable
 
 import aiohttp
 import yarl
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from .const import BASE_URL, LOGIN_URL, PRICE_URL, TANKS_URL
 from .errors import (
@@ -222,7 +222,7 @@ class BoilerJuiceClient:
         token = BeautifulSoup(login_page, "html.parser").find(
             "meta", {"name": "csrf-token"}
         )
-        if not token or not token.get("content"):
+        if not isinstance(token, Tag) or not token.get("content"):
             raise BoilerJuiceConnectionError(
                 "Could not find the CSRF token on the BoilerJuice login page"
             )
