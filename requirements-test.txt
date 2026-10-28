@@ -10,4 +10,7 @@
 # home-assistant: 2026.9.0
 # python: "3.14"
 pytest-homeassistant-custom-component==0.13.363
-beautifulsoup4==4.15.0
+# Home Assistant 2026.9 resolves beautifulsoup4==4.13.3. The manifest allows
+# >=4.13.3, because hassfest rejects an exact pin of a package Home Assistant
+# ships. This lane locks the version that release installs.
+beautifulsoup4==4.13.3

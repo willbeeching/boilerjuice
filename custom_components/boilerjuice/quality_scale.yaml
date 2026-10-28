@@ -61,8 +61,10 @@ rules:
   dependency-transparency:
     status: done
     comment: >-
-      beautifulsoup4 is pinned exactly in the manifest. aiohttp is not
-      redeclared because Home Assistant Core guarantees it.
+      beautifulsoup4 is declared as >=4.13.3, the version current Home
+      Assistant depends on. Hassfest rejects an exact pin of a package
+      Home Assistant ships, and a minimum lets that pin move forward.
+      aiohttp is not redeclared because Home Assistant Core guarantees it.
   docs-actions:
     status: done
     comment: README documents both actions, including the persistence of the
