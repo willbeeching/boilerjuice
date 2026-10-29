@@ -7,4 +7,4 @@
 pytest-homeassistant-custom-component==0.13.215
 # The manifest floor is >=4.13.3. Home Assistant 2025.2.5 ships 4.12.3, and
 # installing the integration upgrades past that, so this lane locks the floor.
-beautifulsoup4==4.13.3
+beautifulsoup4==4.15.0
