@@ -15,8 +15,17 @@ permissions: {}
 jobs:
   notify:
     name: Forward to HA watcher
+    # Dependabot is skipped. GitHub withholds repository secrets from runs it
+    # triggers, so both secrets arrive empty and the step below exits 1 by
+    # design, failing a check on every dependency bump. Duplicating the
+    # webhook credentials into the separate Dependabot secret store would
+    # widen where they live to forward events the watcher does not want.
+    #
     # Issue comments on pull requests are skipped. Opened issues and pull requests always run.
-    if: ${{ github.event_name != 'issue_comment' || github.event.issue.pull_request == null }}
+    if: >-
+      ${{ github.actor != 'dependabot[bot]'
+      && (github.event_name != 'issue_comment'
+      || github.event.issue.pull_request == null) }}
     runs-on: ubuntu-latest
     steps:
       - name: POST event to webhook
